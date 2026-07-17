@@ -75,6 +75,49 @@ def _help_message(bot_name: str) -> str:
     )
 
 
+async def _run_review_with_check(provider: Any, engine: ReviewEngine, pr_url: str) -> Any:
+    """Run a review while reporting progress when the provider supports checks."""
+    pr_info = await provider.get_pr_info(pr_url)
+    create_check = getattr(provider, "create_review_check", None)
+    complete_check = getattr(provider, "complete_review_check", None)
+    check_id: int | None = None
+
+    if create_check is not None:
+        try:
+            check_id = await create_check(pr_info)
+        except Exception as exc:
+            logger.warning("Failed to create review check for %s: %s", pr_url, exc)
+
+    try:
+        result = await engine.review_pr(pr_url)
+    except Exception as exc:
+        if check_id is not None and complete_check is not None:
+            try:
+                await complete_check(
+                    pr_info,
+                    check_id,
+                    succeeded=False,
+                    summary=f"Mira could not complete the review: {exc}",
+                )
+            except Exception as check_exc:
+                logger.warning("Failed to complete review check for %s: %s", pr_url, check_exc)
+        raise
+
+    if check_id is not None and complete_check is not None:
+        try:
+            await complete_check(
+                pr_info,
+                check_id,
+                succeeded=True,
+                summary=(
+                    "Mira completed its review. See the pull request conversation for findings."
+                ),
+            )
+        except Exception as exc:
+            logger.warning("Failed to complete review check for %s: %s", pr_url, exc)
+    return result
+
+
 async def run_pr_review(
     provider: Any,
     owner: str,
@@ -127,7 +170,7 @@ async def run_pr_review(
 
     logger.info("Reviewing %s (indexed=%s)", pr_url, is_indexed)
     try:
-        result = await engine.review_pr(pr_url)
+        result = await _run_review_with_check(provider, engine, pr_url)
         review_tracker.complete(repo_full, number)
     except Exception as exc:
         review_tracker.fail(repo_full, number, str(exc))
@@ -222,7 +265,7 @@ async def run_pr_command(
             "review-rest on %s by @%s — %d file(s)", pr_url, actor, len(progress.skipped_paths)
         )
         try:
-            await engine.review_pr(pr_url)
+            await _run_review_with_check(provider, engine, pr_url)
             review_tracker.complete(repo_full, number)
         except Exception as exc:
             review_tracker.fail(repo_full, number, str(exc))
@@ -240,7 +283,7 @@ async def run_pr_command(
             return
         logger.info("Re-review triggered for %s by @%s", pr_url, actor)
         try:
-            await engine.review_pr(pr_url)
+            await _run_review_with_check(provider, engine, pr_url)
             review_tracker.complete(repo_full, number)
         except Exception as exc:
             review_tracker.fail(repo_full, number, str(exc))

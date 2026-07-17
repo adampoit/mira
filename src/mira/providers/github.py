@@ -185,6 +185,46 @@ class GitHubProvider(BaseProvider):
         except Exception as e:
             raise ProviderError(f"Failed to fetch PR info: {e}") from e
 
+    async def create_review_check(self, pr_info: PRInfo) -> int:
+        """Create an in-progress GitHub Check Run for a review."""
+
+        @_retry_transient
+        def _create() -> int:
+            repo = self._github.get_repo(f"{pr_info.owner}/{pr_info.repo}")
+            check = repo.create_check_run(
+                name="Mira code review",
+                head_sha=pr_info.head_sha,
+                status="in_progress",
+                details_url=pr_info.url,
+                output={
+                    "title": "Review in progress",
+                    "summary": "Mira is reviewing this pull request.",
+                },
+            )
+            return check.id
+
+        return await asyncio.to_thread(_create)
+
+    async def complete_review_check(
+        self, pr_info: PRInfo, check_id: int, *, succeeded: bool, summary: str
+    ) -> None:
+        """Complete a GitHub Check Run created for a review."""
+
+        @_retry_transient
+        def _complete() -> None:
+            repo = self._github.get_repo(f"{pr_info.owner}/{pr_info.repo}")
+            check = repo.get_check_run(check_id)
+            check.edit(
+                status="completed",
+                conclusion="success" if succeeded else "failure",
+                output={
+                    "title": "Review complete" if succeeded else "Review failed",
+                    "summary": summary,
+                },
+            )
+
+        await asyncio.to_thread(_complete)
+
     async def get_pr_diff(self, pr_info: PRInfo) -> str:
         diff_url = f"{_GITHUB_API_URL}/repos/{pr_info.owner}/{pr_info.repo}/pulls/{pr_info.number}"
         headers = {

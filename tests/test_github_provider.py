@@ -73,6 +73,44 @@ def _make_pr_info() -> PRInfo:
     )
 
 
+class TestGitHubReviewChecks:
+    @pytest.mark.asyncio
+    async def test_create_review_check(self):
+        provider = GitHubProvider.__new__(GitHubProvider)
+        provider._github = MagicMock()
+        check = provider._github.get_repo.return_value.create_check_run.return_value
+        check.id = 123
+        pr_info = _make_pr_info()
+        pr_info.head_sha = "abc123"
+
+        assert await provider.create_review_check(pr_info) == 123
+        provider._github.get_repo.return_value.create_check_run.assert_called_once_with(
+            name="Mira code review",
+            head_sha="abc123",
+            status="in_progress",
+            details_url=pr_info.url,
+            output={
+                "title": "Review in progress",
+                "summary": "Mira is reviewing this pull request.",
+            },
+        )
+
+    @pytest.mark.asyncio
+    async def test_complete_review_check(self):
+        provider = GitHubProvider.__new__(GitHubProvider)
+        provider._github = MagicMock()
+        check = provider._github.get_repo.return_value.get_check_run.return_value
+        pr_info = _make_pr_info()
+
+        await provider.complete_review_check(pr_info, 123, succeeded=False, summary="Review failed")
+
+        check.edit.assert_called_once_with(
+            status="completed",
+            conclusion="failure",
+            output={"title": "Review failed", "summary": "Review failed"},
+        )
+
+
 class TestGitHubRetry:
     """Fix 5: Retry behaviour for GitHub API calls."""
 
