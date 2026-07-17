@@ -1,0 +1,19 @@
+name: Fork CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - sync/integration
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Run placeholder verification
+        run: |
+          echo "Replace this with your fork's actual CI checks."

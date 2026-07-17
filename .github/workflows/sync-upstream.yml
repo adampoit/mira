@@ -1,0 +1,51 @@
+name: Sync Upstream Integration
+
+on:
+  schedule:
+    - cron: "0 10 * * *"
+  workflow_dispatch:
+    inputs:
+      no_push:
+        description: Build the sync branch without publishing it.
+        type: boolean
+        required: false
+        default: false
+      source:
+        description: Override the configured source, such as release:latest or branch:main.
+        type: string
+        required: false
+        default: ""
+      patch_refs:
+        description: Override the configured comma-separated patch branches.
+        type: string
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+jobs:
+  fork-sync:
+    runs-on: ubuntu-latest
+    steps:
+      - id: not-adam
+        uses: adampoit/not-adam@v1
+        with:
+          private-key: ${{ secrets.NOT_ADAM_APP_PRIVATE_KEY }}
+
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ steps.not-adam.outputs.token }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Run patchlane sync
+        run: npx patchlane@0.4.0 sync
+        env:
+          GH_TOKEN: ${{ steps.not-adam.outputs.token }}
+          UPSTREAM_SOURCE: ${{ inputs.source }}
+          PATCH_REFS: ${{ inputs.patch_refs }}
+          NO_PUSH: ${{ inputs.no_push || false }}
