@@ -1,0 +1,32 @@
+name: Promote Tested Sync Branch
+
+on:
+  workflow_run:
+    workflows: ["Fork CI"]
+    types: [completed]
+
+permissions:
+  contents: write
+
+jobs:
+  promote:
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_branch == 'sync/integration'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Run patchlane promote
+        run: npx patchlane@0.4.0 promote
+        env:
+          BASE_BRANCH: main
+          SYNC_BRANCH: sync/integration
+          EXPECTED_SYNC_SHA: ${{ github.event.workflow_run.head_sha }}
