@@ -1,0 +1,4 @@
+{
+  "managedSkills": ["patchlane-fork-setup", "patchlane-sync-patches"],
+  "sourceBaseUrl": "https://raw.githubusercontent.com/adampoit/patchlane/v0.4.0/skills"
+}
