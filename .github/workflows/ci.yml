@@ -4,7 +4,9 @@ on:
   push:
     branches: [main, sync/integration]
   pull_request:
-    branches: [main]
+    branches:
+      - main
+      - "patch/**"
 
 # Default-deny token permissions. Each job widens what it actually needs;
 # anything else (a malicious dep in CI, a compromised action) can't push
