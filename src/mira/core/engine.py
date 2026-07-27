@@ -673,9 +673,32 @@ class ReviewEngine:
                 resolved_threads=resolved_thread_dicts or None,
                 team_conventions=team_conventions,
             )
-        except BaseException:
+        except BaseException as exc:
             if overlap_task is not None:
                 overlap_task.cancel()
+
+            # Cancel pending in-progress notification task BEFORE updating the
+            # comment, so it cannot overwrite the failure message.
+            notify_task = getattr(self, "_walkthrough_notify_task", None)
+            if notify_task is not None:
+                notify_task.cancel()
+                self._walkthrough_notify_task = None
+
+            # Update placeholder so the user knows the review failed.
+            if placeholder_id is not None:
+                try:
+                    failure_body = (
+                        f"{WALKTHROUGH_MARKER}\n"
+                        "## Mira PR Walkthrough\n\n"
+                        f"*❌ Review failed: {exc!r}*  \n"
+                        f"```\n{type(exc).__name__}\n```\n"
+                    )
+                    await self.provider.update_comment(pr_info, placeholder_id, failure_body)
+                except Exception as comment_exc:
+                    logger.warning(
+                        "Failed to update placeholder on review failure: %s", comment_exc
+                    )
+
             raise
 
         # The final walkthrough must land after the in-progress one, or it gets
