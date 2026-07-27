@@ -13,10 +13,10 @@ import os
 from typing import ClassVar
 
 import httpx
-from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
+from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 
 from mira.config import LLMConfig
-from mira.exceptions import LLMError
+from mira.exceptions import LLMError, NonRetriableLLMError
 from mira.llm import provider_profiles as profiles
 from mira.llm.tool_schemas import SUBMIT_REVIEW_TOOL, SUBMIT_WALKTHROUGH_TOOL
 
@@ -64,6 +64,16 @@ def _strip_model_prefix(model: str, base_url: str) -> str:
     return model.split("/", 1)[1] if "/" in model else model
 
 
+def _retriable(exception: BaseException) -> bool:
+    """Return True for transient errors; False for 4xx non-retriable errors."""
+    if isinstance(exception, NonRetriableLLMError):
+        return False
+    return isinstance(
+        exception,
+        (httpx.TimeoutException, httpx.NetworkError, LLMError),
+    )
+
+
 class LLMProvider:
     """OpenAI-compatible API client for LLM completions."""
 
@@ -84,6 +94,21 @@ class LLMProvider:
         # whatever model is selected); remembered so we drop it and review
         # without thinking rather than failing.
         self._no_reasoning: set[str] = set()
+        # Apply retry decorator imperatively so it reads config values
+        # (max_retries, retry_min_wait, retry_max_wait) at instance time.
+        self._retry = retry(
+            stop=stop_after_attempt(self.config.max_retries),
+            wait=wait_exponential(
+                multiplier=1,
+                min=self.config.retry_min_wait,
+                max=self.config.retry_max_wait,
+            ),
+            retry=retry_if_exception(_retriable),
+            reraise=True,
+        )
+        self._call_llm = self._retry(self._call_llm)
+        self._call_llm_with_tools = self._retry(self._call_llm_with_tools)
+        self._call_llm_agentic = self._retry(self._call_llm_agentic)
 
     def _chat_url(self) -> str:
         return f"{self.config.base_url.rstrip('/')}/chat/completions"
@@ -121,12 +146,6 @@ class LLMProvider:
         body["reasoning"] = {"effort": effort}
         body.pop("temperature", None)
 
-    @retry(
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=2, max=30),
-        retry=retry_if_exception_type(Exception),
-        reraise=True,
-    )
     async def _call_llm(
         self,
         model: str,
@@ -146,13 +165,15 @@ class LLMProvider:
             body["response_format"] = {"type": "json_object"}
         self._apply_reasoning(body)
 
-        async with httpx.AsyncClient(timeout=120) as client:
+        async with httpx.AsyncClient(timeout=self.config.request_timeout) as client:
             resp = await client.post(
                 self._chat_url(),
                 headers=self._build_headers(),
                 json=body,
             )
             if resp.status_code != 200:
+                if 400 <= resp.status_code < 500 and resp.status_code != 429:
+                    raise NonRetriableLLMError(f"LLM API error {resp.status_code}: {resp.text}")
                 raise LLMError(f"LLM API error {resp.status_code}: {resp.text}")
             data = resp.json()
 
@@ -165,12 +186,6 @@ class LLMProvider:
 
         return content
 
-    @retry(
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=2, max=30),
-        retry=retry_if_exception_type(Exception),
-        reraise=True,
-    )
     async def _call_llm_with_tools(
         self,
         model: str,
@@ -200,7 +215,7 @@ class LLMProvider:
         }
         self._apply_reasoning(body)
 
-        async with httpx.AsyncClient(timeout=120) as client:
+        async with httpx.AsyncClient(timeout=self.config.request_timeout) as client:
             resp = await client.post(
                 self._chat_url(),
                 headers=self._build_headers(),
@@ -227,6 +242,8 @@ class LLMProvider:
                 )
                 resp = await client.post(self._chat_url(), headers=self._build_headers(), json=body)
             if resp.status_code != 200:
+                if 400 <= resp.status_code < 500 and resp.status_code != 429:
+                    raise NonRetriableLLMError(f"LLM API error {resp.status_code}: {resp.text}")
                 raise LLMError(f"LLM API error {resp.status_code}: {resp.text}")
             data = resp.json()
 
@@ -274,6 +291,8 @@ class LLMProvider:
                 temperature=temperature,
                 max_tokens=max_tokens,
             )
+        except NonRetriableLLMError:
+            raise
         except Exception as primary_err:
             if self.config.fallback_model:
                 logger.warning(
@@ -299,12 +318,6 @@ class LLMProvider:
                 f"LLM completion failed with {self.config.model}: {primary_err}"
             ) from primary_err
 
-    @retry(
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=2, max=30),
-        retry=retry_if_exception_type(Exception),
-        reraise=True,
-    )
     async def _call_llm_agentic(
         self,
         model: str,
@@ -329,13 +342,15 @@ class LLMProvider:
         }
         self._apply_reasoning(body)
 
-        async with httpx.AsyncClient(timeout=120) as client:
+        async with httpx.AsyncClient(timeout=self.config.request_timeout) as client:
             resp = await client.post(
                 self._chat_url(),
                 headers=self._build_headers(),
                 json=body,
             )
             if resp.status_code != 200:
+                if 400 <= resp.status_code < 500 and resp.status_code != 429:
+                    raise NonRetriableLLMError(f"LLM API error {resp.status_code}: {resp.text}")
                 raise LLMError(f"LLM API error {resp.status_code}: {resp.text}")
             data = resp.json()
 
@@ -362,6 +377,8 @@ class LLMProvider:
             return await self._call_llm_agentic(
                 self.config.model, messages, tools, temperature=temperature
             )
+        except NonRetriableLLMError:
+            raise
         except Exception as primary_err:
             if self.config.fallback_model:
                 logger.warning(
@@ -406,6 +423,8 @@ class LLMProvider:
             return await self._call_llm_with_tools(
                 self.config.model, messages, tools, temperature=temperature
             )
+        except NonRetriableLLMError:
+            raise
         except Exception as primary_err:
             if self.config.fallback_model:
                 logger.warning(
