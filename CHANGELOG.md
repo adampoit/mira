@@ -4,6 +4,28 @@ All notable changes to Mira are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project
 follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.0] — 2026-07-27
+
+### Added
+
+- **Opt out of per-commit reviews.** `review.review_on_synchronize` (default `true`) controls whether every push to an open PR triggers a fresh review. Turn it off and Mira only reviews when a PR is opened or reopened — later commits are ignored until someone comments `@bot review`. Useful when you batch commits locally before pushing and only want the final diff reviewed, saving tokens and cutting mid-work noise. Honoured on GitHub, GitLab, and Forgejo, and toggleable from the Settings page.
+- **Duplicate-dependency warnings.** A new dependency-review pass flags when a PR adds a package that overlaps in function with one the repo already has (e.g. `react-table` is present and the PR adds `@tanstack/react-table`). It runs on the indexing tier and only when the PR touches a manifest (`package.json`, `pyproject.toml`, `go.mod`, …), so most PRs make no extra LLM call; it compares the added deps against the repo's existing package names from the index (falling back to the manifest diff on an unindexed repo), tags findings `category=dependency`, and merges them into the normal review so they go through the same noise filter and self-critique. Lockfiles are excluded (transitive churn is noise). Gated by `review.dependency_overlap` (default on), admin-toggleable in Settings.
+- **Configurable LLM retry and timeout.** Four new `llm` keys — `max_retries` (3), `request_timeout` (120s), `retry_min_wait` (2s), `retry_max_wait` (30s) — read at runtime instead of being baked in at import time. Raise them for flex-tier models or proxied endpoints that stall under load. Documented in `.mira.yaml.example`.
+- **Concurrent-review de-duplication.** An in-memory review tracker records which PRs are mid-review, so a burst of webhook events (a rapid push + comment, a redelivery) no longer starts overlapping reviews of the same PR — the second attempt is skipped atomically. Review status (`reviewing` / `completed` / `failed`) is wired through the GitHub, GitLab, and Forgejo dispatchers so the dashboard reflects in-flight work.
+
+### Changed
+
+- **LLM retries only fire on transient failures.** The retry predicate is narrowed to timeouts, network errors, and 5xx/429 responses; a 4xx client error now raises `NonRetriableLLMError` and returns immediately instead of burning the full retry budget on a request that can't succeed.
+
+### Security
+
+- **Webhook SSRF via DNS names is closed.** Outbound webhook URLs were only screened for raw private/loopback/metadata *IP literals* — a hostname resolving into one of those ranges slipped through. Delivery now resolves the host and rejects it if any resolved address is private, loopback, link-local, reserved, multicast, or unspecified. Named internal services no longer pass implicitly; allow specific ones with `MIRA_WEBHOOK_ALLOWED_HOSTS` (comma-separated). Unresolvable hosts are treated as unsafe. Still best-effort — a narrow DNS-rebinding window remains for an admin who also controls a fast-flipping record.
+- **No default admin password.** The dashboard no longer ships an `admin` / `admin` account. With `ADMIN_PASSWORD` unset, first start generates a random password and writes it to `<MIRA_INDEX_DIR>/initial_admin_password` (mode `0600`) rather than to logs; if an admin already exists with a well-known default (`admin` / `changeme`), Mira logs a warning to change it. Password storage moves from static-salt SHA-256 to PBKDF2-HMAC-SHA256 (600k iterations, per-user salt, constant-time compare); existing hashes are upgraded on the next successful login.
+- **Several dashboard endpoints were missing auth.** The GitLab/Forgejo sync and repo-register endpoints, model-settings update, uninstall keep/delete, and setup-complete all accepted unauthenticated requests; they now require an admin session.
+- **Public-path auth bypass narrowed.** The auth middleware treated the entire `/api/repos/` prefix and *any* path ending in `.svg` as public (for GitHub badge embedding), exposing more than intended. It now matches only the blast-radius badge (`/api/repos/{owner}/{repo}/blast-radius.svg`) exactly.
+- **Session cookie is marked `Secure` over HTTPS.** The login cookie now sets `Secure` when the request is served over HTTPS (directly or via a trusted `X-Forwarded-Proto`), so it isn't sent over plaintext.
+- **SPA fallback path traversal is closed.** The catch-all static handler resolved `../` sequences before checking the file, so a crafted path could escape the UI dist directory and serve arbitrary files. Resolved paths are now confined to the dist root.
+
 ## [0.7.0] — 2026-07-24
 
 ### Added
