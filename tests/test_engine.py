@@ -798,7 +798,6 @@ class TestReviewEngine:
         assert WALKTHROUGH_MARKER in body
         assert "Code review" in body
         assert "ValueError" in body
-        assert "ValueError" in body
 
     @pytest.mark.asyncio
     async def test_review_failure_re_renders_walkthrough_without_in_progress(

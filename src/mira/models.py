@@ -352,8 +352,7 @@ class WalkthroughResult:
             parts.append("---")
             parts.append("")
             parts.append(
-                "<details>\n"
-                "<summary><b>❌ Review failed</b> — click for details</summary>\n"
+                "<details>\n<summary><b>❌ Review failed</b> — click for details</summary>\n"
             )
             parts.append("")
             parts.append(failure_notice)

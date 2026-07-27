@@ -29,7 +29,7 @@ class LLMError(MiraError):
     """Error communicating with an LLM provider.
 
     Constructed from the centralized error catalog in
-    ``mira.llm.error_messages`` — never from an ad-hoc f-string. The catalog
+    ``mira.error_messages`` — never from an ad-hoc f-string. The catalog
     holds both the full template (with model names, internal errors) and a
     safe template (user-facing). ``safe_message`` returns the safe variant.
 

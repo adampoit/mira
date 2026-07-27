@@ -28,7 +28,7 @@ from mira.core.passes import (
 )
 from mira.core.priority import rank_files
 from mira.core.threads import resolve_verified_threads, short_thread_description
-from mira.exceptions import ResponseParseError
+from mira.exceptions import MiraError, ResponseParseError
 from mira.index.context import build_code_context
 from mira.index.manifests import _is_lockfile_path, is_manifest
 from mira.index.store import IndexStore
@@ -42,7 +42,6 @@ from mira.llm.response_parser import (
     parse_llm_response,
     parse_walkthrough_response,
 )
-from mira.exceptions import MiraError
 from mira.models import (
     WALKTHROUGH_MARKER,
     FileChangeType,
@@ -421,10 +420,7 @@ class ReviewEngine:
     @staticmethod
     def _format_failure_notice(exc: BaseException) -> str:
         """Format a user-safe failure notice without model names or internal errors."""
-        if isinstance(exc, MiraError):
-            message = exc.safe_message
-        else:
-            message = type(exc).__name__
+        message = exc.safe_message if isinstance(exc, MiraError) else type(exc).__name__
         return (
             f"The code review failed to complete due to an unexpected error.\n\n"
             f"**Stage:** Code review\n"
