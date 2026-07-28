@@ -110,6 +110,9 @@ quote-style = "double"
 indent-style = "space"
 line-ending = "lf"
 
+[tool.basedpyright]
+typeCheckingMode = "standard"
+
 [tool.mypy]
 python_version = "3.11"
 # Strict mode is the goal but the codebase isn't there yet — enabling it
