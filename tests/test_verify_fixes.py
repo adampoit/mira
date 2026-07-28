@@ -1,14 +1,22 @@
+# pyright: standard, reportPrivateUsage=false
+
 """Tests for the verify-fixes prompt builder and response parser."""
 
 from __future__ import annotations
 
 import json
+from typing import cast
 
+import pytest
+
+from mira.core.threads import verify_fixes
+from mira.llm.base import LLMProviderProtocol
 from mira.llm.prompts.verify_fixes import (
     _extract_issue_description,
     build_verify_fixes_prompt,
     parse_verify_fixes_response,
 )
+from mira.llm.tool_schemas import SUBMIT_VERIFY_FIXES_TOOL
 from mira.models import UnresolvedThread
 
 # Realistic formatted body matching _format_comment_body output
@@ -49,6 +57,34 @@ def _make_thread(
     body: str = "Hardcoded API key.",
 ) -> UnresolvedThread:
     return UnresolvedThread(thread_id=thread_id, path=path, line=line, body=body)
+
+
+@pytest.mark.asyncio
+async def test_verify_fixes_uses_typed_submission_tool() -> None:
+    class RecordingLLM:
+        def __init__(self) -> None:
+            self.tools: list[dict[str, object]] | None = None
+            self.temperature: float | None = None
+
+        async def complete_with_tools(
+            self,
+            messages: list[dict[str, str]],
+            tools: list[dict[str, object]],
+            temperature: float | None = None,
+        ) -> str:
+            assert messages
+            self.tools = tools
+            self.temperature = temperature
+            return '{"results":[{"id":"T1","fixed":true}]}'
+
+    llm = RecordingLLM()
+    groups = [("src/app.py", "29| api_key = get_key()", [_make_thread()])]
+
+    result = await verify_fixes(cast(LLMProviderProtocol, cast(object, llm)), groups)
+
+    assert result == ["T1"]
+    assert llm.tools == [SUBMIT_VERIFY_FIXES_TOOL]
+    assert llm.temperature == 0.0
 
 
 class TestExtractIssueDescription:
@@ -136,10 +172,10 @@ class TestBuildVerifyFixesPrompt:
         assert "code_a" in user
         assert "code_b" in user
 
-    def test_system_prompt_requests_json(self):
+    def test_system_prompt_requests_structured_result(self):
         messages = build_verify_fixes_prompt([("src/app.py", "code", [_make_thread()])])
         system = messages[0]["content"]
-        assert "JSON" in system
+        assert "Submit one result for every issue" in system
         assert '"fixed"' in system
 
     def test_system_prompt_not_overly_conservative(self):

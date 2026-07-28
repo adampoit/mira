@@ -1,3 +1,5 @@
+# pyright: standard, reportUnusedParameter=false
+
 """Platform-neutral webhook handlers — shared by the GitHub and GitLab
 webhook layers. Each takes a provider/auth and operates through the engine;
 none is tied to a specific platform's payload shape."""
@@ -7,7 +9,7 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from jinja2 import Environment, FileSystemLoader
 
@@ -17,6 +19,7 @@ from mira.dashboard.models_config import llm_config_for
 from mira.index.store import IndexStore
 from mira.llm import create_llm
 from mira.llm.prompts.review import build_conversation_prompt
+from mira.llm.review_factory import create_review_llms
 from mira.llm.tool_schemas import SUBMIT_THREAD_REPLY_TOOL
 from mira.llm.utils import strip_code_fences, strip_think_blocks
 
@@ -49,7 +52,7 @@ _RESUME_KEYWORDS = {"resume"}
 
 def _open_store(owner: str, repo: str, platform: str = "github") -> IndexStore:
     """Open an IndexStore for the given owner/repo."""
-    return IndexStore.open(owner, repo, platform=platform)
+    return cast(IndexStore, IndexStore.open(owner, repo, platform=platform))
 
 
 def _help_message(bot_name: str) -> str:
@@ -91,10 +94,7 @@ async def run_pr_review(
     """
     repo_full = f"{owner}/{repo}"
     config = load_config()
-    from mira.dashboard.models_config import llm_config_for
-
-    llm = create_llm(llm_config_for("review", config.llm))
-    indexing_llm = create_llm(llm_config_for("indexing", config.llm))
+    llm, indexing_llm = create_review_llms(config)
     engine = ReviewEngine(
         config=config,
         llm=llm,
@@ -159,10 +159,7 @@ async def run_pr_command(
     and engine. Shared by the GitHub and GitLab comment handlers.
     """
     config = load_config()
-    from mira.dashboard.models_config import llm_config_for
-
-    llm = create_llm(llm_config_for("review", config.llm))
-    indexing_llm = create_llm(llm_config_for("indexing", config.llm))
+    llm, indexing_llm = create_review_llms(config)
 
     normalized = question.lower().strip()
     is_review = normalized in _REVIEW_KEYWORDS
@@ -194,7 +191,7 @@ async def run_pr_command(
             bot_name=bot_name,
             indexing_llm=indexing_llm,
         )
-        engine._review_only_paths = set(progress.skipped_paths)  # type: ignore[attr-defined]
+        engine._review_only_paths = set(progress.skipped_paths)
         logger.info(
             "review-rest on %s by @%s — %d file(s)", pr_url, actor, len(progress.skipped_paths)
         )

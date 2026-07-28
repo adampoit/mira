@@ -1,8 +1,8 @@
 """Structured-output tool schemas the model fills in via tool calling.
 
-The ``submit_*`` schemas for the review, critique, thread-reply, and
-walkthrough passes. Distinct from ``agentic_tools`` (the read_file/grep
-tools the model calls while reasoning) — these are the shapes it returns.
+These ``submit_*`` schemas define terminal results for review, indexing,
+feedback-learning, and verification passes. They are distinct from the
+repository tools the model calls while reasoning.
 """
 
 SUBMIT_REVIEW_TOOL = {
@@ -153,6 +153,199 @@ SUBMIT_CRITIQUE_TOOL = {
                 },
             },
             "required": ["verdicts"],
+        },
+    },
+}
+
+
+SUBMIT_VERIFY_FIXES_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "submit_fix_verification",
+        "description": "Submit whether each previously reported review issue is fixed.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "results": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "id": {
+                                "type": "string",
+                                "description": "The supplied review thread ID.",
+                            },
+                            "fixed": {
+                                "type": "boolean",
+                                "description": "Whether the reported issue is fixed.",
+                            },
+                        },
+                        "required": ["id", "fixed"],
+                        "additionalProperties": False,
+                    },
+                }
+            },
+            "required": ["results"],
+            "additionalProperties": False,
+        },
+    },
+}
+
+
+SUBMIT_FILE_SUMMARIES_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "submit_file_summaries",
+        "description": "Submit structured summaries for the requested source files.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "files": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "path": {"type": "string"},
+                            "language": {"type": "string"},
+                            "summary": {"type": "string"},
+                            "symbols": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "name": {"type": "string"},
+                                        "kind": {"type": "string"},
+                                        "signature": {"type": "string"},
+                                        "description": {"type": "string"},
+                                    },
+                                    "required": ["name", "kind", "signature", "description"],
+                                    "additionalProperties": False,
+                                },
+                            },
+                            "imports": {"type": "array", "items": {"type": "string"}},
+                            "symbol_references": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "source": {"type": "string"},
+                                        "calls": {
+                                            "type": "array",
+                                            "items": {
+                                                "type": "object",
+                                                "properties": {
+                                                    "path": {"type": "string"},
+                                                    "symbol": {"type": "string"},
+                                                },
+                                                "required": ["path", "symbol"],
+                                                "additionalProperties": False,
+                                            },
+                                        },
+                                    },
+                                    "required": ["source", "calls"],
+                                    "additionalProperties": False,
+                                },
+                            },
+                            "external_refs": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "kind": {"type": "string"},
+                                        "target": {"type": "string"},
+                                        "description": {"type": "string"},
+                                    },
+                                    "required": ["kind", "target", "description"],
+                                    "additionalProperties": False,
+                                },
+                            },
+                        },
+                        "required": [
+                            "path",
+                            "language",
+                            "summary",
+                            "symbols",
+                            "imports",
+                            "symbol_references",
+                        ],
+                        "additionalProperties": False,
+                    },
+                }
+            },
+            "required": ["files"],
+            "additionalProperties": False,
+        },
+    },
+}
+
+
+SUBMIT_DIRECTORY_SUMMARIES_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "submit_directory_summaries",
+        "description": "Submit summaries for the requested repository directories.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "directories": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "path": {"type": "string"},
+                            "summary": {"type": "string"},
+                        },
+                        "required": ["path", "summary"],
+                        "additionalProperties": False,
+                    },
+                }
+            },
+            "required": ["directories"],
+            "additionalProperties": False,
+        },
+    },
+}
+
+
+SUBMIT_DIRECTORY_SUMMARY_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "submit_directory_summary",
+        "description": "Submit a summary for the requested repository directory.",
+        "parameters": {
+            "type": "object",
+            "properties": {"summary": {"type": "string"}},
+            "required": ["summary"],
+            "additionalProperties": False,
+        },
+    },
+}
+
+
+SUBMIT_FEEDBACK_RULES_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "submit_feedback_rules",
+        "description": "Submit recurring code-review rules learned from human feedback.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "rules": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "rule": {"type": "string"},
+                            "rationale": {"type": "string"},
+                            "evidence_count": {"type": "integer", "minimum": 2},
+                        },
+                        "required": ["rule", "rationale", "evidence_count"],
+                        "additionalProperties": False,
+                    },
+                }
+            },
+            "required": ["rules"],
+            "additionalProperties": False,
         },
     },
 }

@@ -1,3 +1,5 @@
+# pyright: standard, reportUnusedParameter=false
+
 """Tests for the indexing pipeline."""
 
 from __future__ import annotations
@@ -18,6 +20,11 @@ from mira.index.indexer import (
     index_repo,
 )
 from mira.index.store import IndexStore
+from mira.llm.tool_schemas import (
+    SUBMIT_DIRECTORY_SUMMARIES_TOOL,
+    SUBMIT_DIRECTORY_SUMMARY_TOOL,
+    SUBMIT_FILE_SUMMARIES_TOOL,
+)
 
 
 class TestShouldIndex:
@@ -209,7 +216,7 @@ class TestIndexRepo:
         store = IndexStore(str(tmp_path / "test.db"))
 
         mock_llm = AsyncMock()
-        mock_llm.complete = AsyncMock(
+        mock_llm.complete_with_tools = AsyncMock(
             return_value=json.dumps(
                 {
                     "files": [
@@ -255,13 +262,16 @@ class TestIndexRepo:
         summary = store.get_summary("src/main.py")
         assert summary is not None
         assert summary.summary == "Main entry point."
+        calls = mock_llm.complete_with_tools.await_args_list
+        assert calls[0].kwargs["tools"] == [SUBMIT_FILE_SUMMARIES_TOOL]
+        assert calls[1].kwargs["tools"] == [SUBMIT_DIRECTORY_SUMMARIES_TOOL]
         store.close()
 
     async def test_skips_files_over_size_limit(self, tmp_path):
         """Files above index.max_file_size are dropped before summarization."""
         store = IndexStore(str(tmp_path / "test.db"))
         mock_llm = AsyncMock()
-        mock_llm.complete = AsyncMock()
+        mock_llm.complete_with_tools = AsyncMock()
 
         config = MiraConfig()
         config.index.max_file_size = 1_000
@@ -279,7 +289,7 @@ class TestIndexRepo:
         )
 
         assert count == 0
-        mock_llm.complete.assert_not_called()
+        mock_llm.complete_with_tools.assert_not_called()
         store.close()
 
 
@@ -290,7 +300,7 @@ class TestIndexDiff:
         store = IndexStore(str(tmp_path / "test.db"))
 
         mock_llm = AsyncMock()
-        mock_llm.complete = AsyncMock(
+        mock_llm.complete_with_tools = AsyncMock(
             return_value=json.dumps(
                 {
                     "files": [
@@ -319,6 +329,9 @@ class TestIndexDiff:
 
         assert count == 1
         assert store.get_summary("src/utils.py") is not None
+        calls = mock_llm.complete_with_tools.await_args_list
+        assert calls[0].kwargs["tools"] == [SUBMIT_FILE_SUMMARIES_TOOL]
+        assert calls[1].kwargs["tools"] == [SUBMIT_DIRECTORY_SUMMARY_TOOL]
         store.close()
 
     async def test_index_diff_refreshes_changed_lockfile(self, tmp_path):
@@ -348,7 +361,7 @@ class TestIndexDiff:
             }
         )
         mock_llm = AsyncMock()
-        mock_llm.complete = AsyncMock(return_value='{"files": []}')
+        mock_llm.complete_with_tools = AsyncMock(return_value='{"files": []}')
 
         with patch("mira.security.poller.poll_repo", new=AsyncMock()) as poll:
             count = await index_diff(
@@ -367,7 +380,7 @@ class TestIndexDiff:
         versions = {(p.name, p.version) for p in store.list_manifest_packages()}
         assert ("lodash", "4.17.21") in versions
         assert ("lodash", "4.17.20") not in versions
-        mock_llm.complete.assert_not_called()
+        mock_llm.complete_with_tools.assert_not_called()
         poll.assert_called_once_with("test", "repo")
         store.close()
 
@@ -388,7 +401,7 @@ class TestIndexDiff:
         )
 
         mock_llm = AsyncMock()
-        mock_llm.complete = AsyncMock(return_value='{"files": []}')
+        mock_llm.complete_with_tools = AsyncMock(return_value='{"files": []}')
 
         with patch("mira.security.poller.poll_repo", new=AsyncMock()):
             await index_diff(
@@ -418,7 +431,7 @@ class TestIndexDiff:
         )
 
         mock_llm = AsyncMock()
-        mock_llm.complete = AsyncMock(return_value='{"files": []}')
+        mock_llm.complete_with_tools = AsyncMock(return_value='{"files": []}')
 
         await index_diff(
             owner="test",

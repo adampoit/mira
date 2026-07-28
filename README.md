@@ -53,7 +53,7 @@ Most AI reviewers are SaaS: your diffs (and often the full surrounding code) lea
   - **Cost & token telemetry**: actual spend per repo and per model, not estimates, because you control the LLM key.
   - **Coming soon, change-frequency heatmaps**: surface the files that bug fixes keep landing on so you can target review attention.
 
-If your engineering team needs answers like *"which of our repos are exposed to this CVE?"* or *"what's the blast radius of changing this function?"*, those questions stop being multi-day investigations and start being one-click dashboard pages.
+If your engineering team needs answers like _"which of our repos are exposed to this CVE?"_ or _"what's the blast radius of changing this function?"_, those questions stop being multi-day investigations and start being one-click dashboard pages.
 
 ## Benchmark
 
@@ -67,12 +67,12 @@ Plotted against every published competitor on the same subset, Mira sits in the 
 
 Measured on the same 50-PR offline benchmark, judged by Claude Sonnet 4.6.
 
-| | **Mira** | Cubic-v2 | Greptile | CodeRabbit | GitHub Copilot |
-|---|---:|---:|---:|---:|---:|
-| F1 | **44** | 56 | 35 | 32 | 31 |
-| Precision | **43%** | 50% | 32% | 24% | 24% |
-| Recall | **46%** | 65% | 40% | 50% | 43% |
-| Median time / PR | **~77s** | ~9m | ~5m | ~5m | ~10m |
+|                  | **Mira** | Cubic-v2 | Greptile | CodeRabbit | GitHub Copilot |
+| ---------------- | -------: | -------: | -------: | ---------: | -------------: |
+| F1               |   **44** |       56 |       35 |         32 |             31 |
+| Precision        |  **43%** |      50% |      32% |        24% |            24% |
+| Recall           |  **46%** |      65% |      40% |        50% |            43% |
+| Median time / PR | **~77s** |      ~9m |      ~5m |        ~5m |           ~10m |
 
 > Methodology: scores measured against the [Martian Code Review Bench](https://codereview.withmartian.com/?mode=offline) offline dataset with Claude Sonnet 4.6 as the judge.
 
@@ -116,11 +116,23 @@ docker run -p 8000:8000 --env-file .env \
 ```yaml
 # .mira.yaml — optional per-repo override
 filter:
-  confidence_threshold: 0.5  # noisier repo → lower bar
+  confidence_threshold: 0.5 # noisier repo → lower bar
   max_comments: 10
 ```
 
 → Full schema and every key: [Configuration docs](https://docs.miracode.ai/configuration).
+
+### Pi agent reviews (opt-in)
+
+Set `review.engine: pi_agent` to execute each of Mira's existing LLM calls as an isolated Pi agent session. Mira still owns the review pipeline, parsing, filtering, and posting. The default `pipeline` engine has no Node.js or Pi dependency, and Pi failures never fall back silently to the native provider.
+
+The Docker image installs the worker automatically. For other deployments, run `npm ci --omit=dev` in `integrations/mira-pi-worker/` and set `MIRA_PI_WORKER` to its `worker.js` path. The worker currently uses Pi's OpenCode Go provider and requires `OPENCODE_API_KEY`.
+
+Pi uses Mira's resolved review and indexing models (`llm.review_model` and `llm.indexing_model`, each falling back to `llm.model`). The selected model IDs must be available from OpenCode Go; Mira removes the catalog provider prefix before looking them up. `llm.review_reasoning_effort` controls Pi's review thinking level, while indexing runs with thinking off.
+
+- `MIRA_PI_WORKER`: worker executable (default: `mira-pi-worker`)
+- `MIRA_PI_TIMEOUT_SECONDS`: per-pass timeout (default: `900`)
+- `MIRA_PI_SESSION_DIR`: persistent Pi session directory (defaults to temporary storage)
 
 ## Development
 

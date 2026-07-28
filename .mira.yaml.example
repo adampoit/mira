@@ -46,6 +46,8 @@ filter:
   max_files: 50
 
 review:
+  # Review backend: "pipeline" (default) or the opt-in "pi_agent" worker.
+  engine: "pipeline"
   # Lines of context around hunks
   context_lines: 3
   # Maximum diff size in characters

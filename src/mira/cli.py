@@ -1,3 +1,5 @@
+# pyright: standard
+
 """Click CLI for Mira."""
 
 from __future__ import annotations
@@ -13,7 +15,7 @@ from mira import __version__
 from mira.config import load_config
 from mira.core.engine import ReviewEngine
 from mira.exceptions import MiraError
-from mira.llm import create_llm
+from mira.llm.review_factory import create_review_llms
 from mira.models import ReviewResult, Severity
 
 
@@ -183,10 +185,7 @@ def review(
     except MiraError as e:
         raise click.ClickException(str(e)) from e
 
-    from mira.dashboard.models_config import llm_config_for
-
-    llm = create_llm(llm_config_for("review", config.llm))
-    indexing_llm = create_llm(llm_config_for("indexing", config.llm))
+    llm, indexing_llm = create_review_llms(config)
 
     git_token = token or github_token
     github_provider = None
@@ -221,7 +220,8 @@ def review(
             diff_text = sys.stdin.read()
             result = asyncio.run(engine.review_diff(diff_text))
         else:
-            result = asyncio.run(engine.review_pr(pr_url))  # type: ignore[arg-type]
+            assert pr_url is not None
+            result = asyncio.run(engine.review_pr(pr_url))
     except MiraError as e:
         raise click.ClickException(str(e)) from e
 
@@ -328,7 +328,7 @@ def serve(
 
     if config_path:
         try:
-            set_global_defaults(config_path)
+            _ = set_global_defaults(config_path)
             click.echo(f"Loaded deployment config: {config_path}")
         except Exception as exc:
             raise click.ClickException(f"Invalid --config file: {exc}") from exc
@@ -345,7 +345,7 @@ def serve(
     gitlab_auth = None
 
     if github_configured:
-        assert private_key is not None
+        assert app_id is not None and private_key is not None
         if private_key.startswith("@"):
             key_path = private_key[1:]
             try:
@@ -363,6 +363,7 @@ def serve(
     # the user didn't override it. Falls back to "miracodeai" on a lookup blip.
     if not bot_name:
         identity_auth = app_auth or gitlab_auth
+        assert identity_auth is not None
         bot_name = asyncio.run(identity_auth.get_bot_identity()) or "miracodeai"
         click.echo(f"Detected bot @mention: @{bot_name}")
 

@@ -1,3 +1,5 @@
+# pyright: standard, reportArgumentType=false, reportUnusedParameter=false
+
 """Tests for LLM provider wrapper (OpenRouter via httpx)."""
 
 from __future__ import annotations
@@ -453,6 +455,21 @@ class TestToolChoiceFallback:
 
         assert len(posts) == 1  # straight to auto, no wasted forced attempt
         assert posts[0].kwargs["json"]["tool_choice"] == "auto"
+
+    @pytest.mark.asyncio
+    async def test_structured_completion_honors_max_tokens_override(self):
+        provider = LLMProvider(LLMConfig(model="some/model", max_tokens=1024))
+        ok = _mock_httpx_response(_make_tool_response_json('{"comments": []}'))
+
+        with patch("mira.llm.provider.httpx.AsyncClient") as cls:
+            cls.return_value = self._client([ok])
+            await provider.complete_with_tools(
+                [{"role": "user", "content": "hi"}],
+                tools=[self._TOOL],
+                max_tokens=8192,
+            )
+
+        assert cls.return_value.post.call_args.kwargs["json"]["max_tokens"] == 8192
 
     @pytest.mark.asyncio
     async def test_unrelated_400_does_not_trigger_auto_fallback(self):
