@@ -154,7 +154,7 @@ class GitHubRepoFetcher:
         except Exception as exc:
             logger.warning("Tarball fetch failed for %s/%s: %s", owner, repo, exc)
             return None
-        return _strip_tarball(blob, max_file_size, f"{owner}/{repo}, indexable_paths")
+        return _strip_tarball(blob, max_file_size, f"{owner}/{repo}", indexable_paths)
 
 
 class GitLabRepoFetcher:
