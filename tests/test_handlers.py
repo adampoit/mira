@@ -1,3 +1,5 @@
+# pyright: standard, reportUnusedParameter=false
+
 """Tests for webhook event handlers."""
 
 from __future__ import annotations
@@ -70,7 +72,7 @@ def mock_pr_info() -> PRInfo:
 
 @patch("mira.platforms.handlers.ReviewEngine")
 @patch("mira.platforms.github.webhook.create_provider")
-@patch("mira.platforms.handlers.create_llm")
+@patch("mira.platforms.handlers.create_review_llms")
 @patch("mira.platforms.handlers.load_config")
 async def test_handle_pr_event(
     mock_config: MagicMock,
@@ -81,6 +83,7 @@ async def test_handle_pr_event(
 ) -> None:
     """PR event creates engine and calls review_pr."""
     mock_config.return_value = MagicMock()
+    mock_llm_cls.return_value = (AsyncMock(), AsyncMock())
     mock_engine = AsyncMock()
     mock_engine.review_pr = AsyncMock(return_value=ReviewResult(summary="ok"))
     mock_engine_cls.return_value = mock_engine
@@ -137,7 +140,7 @@ def _data_for(mock_dispatch: AsyncMock, event: str) -> dict:
 
 @patch("mira.platforms.handlers.ReviewEngine")
 @patch("mira.platforms.github.webhook.create_provider")
-@patch("mira.platforms.handlers.create_llm")
+@patch("mira.platforms.handlers.create_review_llms")
 @patch("mira.platforms.handlers.load_config")
 async def test_completed_review_fires_review_completed(
     mock_config: MagicMock,
@@ -149,6 +152,7 @@ async def test_completed_review_fires_review_completed(
     """A finished review fires review.completed with repo/PR/count data (and
     NOT high-severity when the comments are below warning)."""
     mock_config.return_value = MagicMock()
+    mock_llm_cls.return_value = (AsyncMock(), AsyncMock())
     result = ReviewResult(
         summary="ok",
         comments=[_comment(Severity.SUGGESTION)],
@@ -169,7 +173,7 @@ async def test_completed_review_fires_review_completed(
 
 @patch("mira.platforms.handlers.ReviewEngine")
 @patch("mira.platforms.github.webhook.create_provider")
-@patch("mira.platforms.handlers.create_llm")
+@patch("mira.platforms.handlers.create_review_llms")
 @patch("mira.platforms.handlers.load_config")
 async def test_blocker_comment_also_fires_high_severity(
     mock_config: MagicMock,
@@ -180,6 +184,7 @@ async def test_blocker_comment_also_fires_high_severity(
 ) -> None:
     """A review with a blocker/warning fires both completed and high_severity."""
     mock_config.return_value = MagicMock()
+    mock_llm_cls.return_value = (AsyncMock(), AsyncMock())
     result = ReviewResult(
         summary="bad",
         comments=[_comment(Severity.BLOCKER), _comment(Severity.NITPICK)],
@@ -194,7 +199,7 @@ async def test_blocker_comment_also_fires_high_severity(
 
 @patch("mira.platforms.handlers.ReviewEngine")
 @patch("mira.platforms.github.webhook.create_provider")
-@patch("mira.platforms.handlers.create_llm")
+@patch("mira.platforms.handlers.create_review_llms")
 @patch("mira.platforms.handlers.load_config")
 async def test_failed_review_fires_review_failed(
     mock_config: MagicMock,
@@ -205,6 +210,7 @@ async def test_failed_review_fires_review_failed(
 ) -> None:
     """A review that raises fires review.failed (and not review.completed)."""
     mock_config.return_value = MagicMock()
+    mock_llm_cls.return_value = (AsyncMock(), AsyncMock())
     mock_dispatch = await _run_pr_handler(RuntimeError("boom"), mock_engine_cls, mock_app_auth)
 
     events = _events(mock_dispatch)
@@ -218,7 +224,7 @@ async def test_failed_review_fires_review_failed(
 
 @patch("mira.platforms.handlers.ReviewEngine")
 @patch("mira.platforms.github.webhook.create_provider")
-@patch("mira.platforms.handlers.create_llm")
+@patch("mira.platforms.handlers.create_review_llms")
 @patch("mira.platforms.handlers.load_config")
 async def test_handle_comment_review_keyword(
     mock_config: MagicMock,
@@ -229,6 +235,7 @@ async def test_handle_comment_review_keyword(
 ) -> None:
     """'review' keyword triggers full review_pr."""
     mock_config.return_value = MagicMock()
+    mock_llm_cls.return_value = (AsyncMock(), AsyncMock())
     mock_engine = AsyncMock()
     mock_engine.review_pr = AsyncMock(return_value=ReviewResult(summary="ok"))
     mock_engine_cls.return_value = mock_engine
@@ -240,7 +247,7 @@ async def test_handle_comment_review_keyword(
 
 
 @patch("mira.platforms.github.webhook.create_provider")
-@patch("mira.platforms.handlers.create_llm")
+@patch("mira.platforms.handlers.create_review_llms")
 @patch("mira.platforms.handlers.load_config")
 @pytest.mark.parametrize("verb", ["help", "?", "commands", "HELP", "Help"])
 async def test_handle_comment_help_posts_command_list(
@@ -256,7 +263,7 @@ async def test_handle_comment_help_posts_command_list(
     mock_config.return_value = MagicMock()
     mock_llm = AsyncMock()
     mock_llm.complete = AsyncMock()  # should NOT be called
-    mock_llm_cls.return_value = mock_llm
+    mock_llm_cls.return_value = (mock_llm, AsyncMock())
 
     mock_provider = AsyncMock()
     mock_provider.get_pr_info = AsyncMock(return_value=mock_pr_info)
@@ -276,7 +283,7 @@ async def test_handle_comment_help_posts_command_list(
 
 
 @patch("mira.platforms.github.webhook.create_provider")
-@patch("mira.platforms.handlers.create_llm")
+@patch("mira.platforms.handlers.create_review_llms")
 @patch("mira.platforms.handlers.load_config")
 async def test_handle_comment_question(
     mock_config: MagicMock,
@@ -289,7 +296,7 @@ async def test_handle_comment_question(
     mock_config.return_value = MagicMock()
     mock_llm = AsyncMock()
     mock_llm.complete = AsyncMock(return_value="Because of the nested loop.")
-    mock_llm_cls.return_value = mock_llm
+    mock_llm_cls.return_value = (mock_llm, AsyncMock())
 
     mock_provider = AsyncMock()
     mock_provider.get_pr_info = AsyncMock(return_value=mock_pr_info)
@@ -308,7 +315,7 @@ async def test_handle_comment_question(
 
 
 @patch("mira.platforms.github.webhook.create_provider")
-@patch("mira.platforms.handlers.create_llm")
+@patch("mira.platforms.handlers.create_review_llms")
 @patch("mira.platforms.handlers.load_config")
 async def test_handle_comment_formats_reply_with_attribution(
     mock_config: MagicMock,
@@ -321,7 +328,7 @@ async def test_handle_comment_formats_reply_with_attribution(
     mock_config.return_value = MagicMock()
     mock_llm = AsyncMock()
     mock_llm.complete = AsyncMock(return_value="It's an O(n^2) loop.")
-    mock_llm_cls.return_value = mock_llm
+    mock_llm_cls.return_value = (mock_llm, AsyncMock())
 
     mock_provider = AsyncMock()
     mock_provider.get_pr_info = AsyncMock(return_value=mock_pr_info)

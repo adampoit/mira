@@ -1,3 +1,5 @@
+# pyright: standard
+
 """Main review orchestration engine."""
 
 from __future__ import annotations
@@ -6,10 +8,7 @@ import contextlib
 import logging
 import re
 from collections.abc import Awaitable, Callable
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from mira.llm.base import LLMProviderProtocol
+from typing import cast
 
 from mira.analysis.severity import classify_severity
 from mira.config import MiraConfig
@@ -29,9 +28,14 @@ from mira.core.passes import (
 from mira.core.priority import rank_files
 from mira.core.threads import resolve_verified_threads, short_thread_description
 from mira.exceptions import ResponseParseError
-from mira.index.context import build_code_context
+from mira.index.context import SourceFetcher, build_code_context
 from mira.index.manifests import _is_lockfile_path, is_manifest
 from mira.index.store import IndexStore
+from mira.llm.base import (
+    LLMProviderProtocol,
+    NativeAgentLoopProvider,
+    RepositoryAwareProvider,
+)
 from mira.llm.prompts.review import (
     build_review_prompt,
     build_walkthrough_prompt,
@@ -398,8 +402,9 @@ class ReviewEngine:
         # Only the latter drives the user-visible "your repo isn't indexed" nudge.
         self._jit_needed = False
         self._index_was_empty = False
-        self._agentic_source_fetcher: object | None = None
+        self._agentic_source_fetcher: SourceFetcher | None = None
         self._agentic_repo_tree: list[str] = []
+        self._review_only_paths: set[str] | None = None
 
     async def _post_placeholder_comment(self, pr_info: PRInfo) -> int | None:
         """Post an immediate 'Reviewing this PR...' comment and return its ID.
@@ -511,6 +516,13 @@ class ReviewEngine:
         pr_info = await self.provider.get_pr_info(pr_url)
         self._pr_info = pr_info
 
+        repository_providers = [self.llm]
+        if self.indexing_llm is not self.llm:
+            repository_providers.append(self.indexing_llm)
+        for llm in repository_providers:
+            if isinstance(llm, RepositoryAwareProvider):
+                await llm.bind_repository(self.provider, pr_info)
+
         async def _resolve_threads() -> tuple[
             int, int, list[UnresolvedThread], list[ThreadDecision]
         ]:
@@ -554,6 +566,7 @@ class ReviewEngine:
                     bot_name=self.bot_name or "miracodeai",
                     in_progress=True,
                 )
+                assert self.provider is not None
                 await self.provider.update_comment(pr_info, placeholder_id, markdown)
             except Exception as exc:
                 logger.warning("Failed to post in-progress walkthrough: %s", exc)
@@ -884,7 +897,7 @@ class ReviewEngine:
             try:
                 from mira.analysis.feedback import synthesize_rules
 
-                synthesize_rules(store)
+                synthesize_rules(cast(IndexStore, store))
             except Exception as synth_err:
                 logger.debug("Feedback synthesis failed: %s", synth_err)
             store.close()
@@ -1052,7 +1065,7 @@ class ReviewEngine:
                     changed_paths = [f.path for f in filtered]
                     ctx = await build_code_context(
                         changed_paths=changed_paths,
-                        store=store,
+                        store=cast(IndexStore, store),
                         token_budget=self.config.review.context_token_budget,
                         source_fetcher=source_fetcher,
                     )
@@ -1072,10 +1085,11 @@ class ReviewEngine:
                             )
 
                             tree_paths: set[str] | None = None
-                            if hasattr(self.provider, "get_repo_tree"):
+                            provider = self.provider
+                            if provider is not None:
                                 try:
                                     tree_paths = set(
-                                        await self.provider.get_repo_tree(
+                                        await provider.get_repo_tree(
                                             pr_info,
                                             pr_info.head_branch,
                                         )
@@ -1255,16 +1269,19 @@ class ReviewEngine:
                         )
 
                     raw_response = ""
+                    agentic_source_fetcher = self._agentic_source_fetcher
                     use_agentic = (
                         self.config.review.agentic_tools
-                        and getattr(self, "_jit_needed", False)
-                        and self._agentic_source_fetcher is not None
+                        and not isinstance(self.llm, NativeAgentLoopProvider)
+                        and self._jit_needed
+                        and agentic_source_fetcher is not None
                     )
                     if use_agentic:
                         from mira.llm.agentic_tools import AgenticToolExecutor
 
+                        assert agentic_source_fetcher is not None
                         executor = AgenticToolExecutor(
-                            source_fetcher=self._agentic_source_fetcher,  # type: ignore[arg-type]
+                            source_fetcher=agentic_source_fetcher,
                             repo_tree=list(self._agentic_repo_tree),
                         )
                         raw_response = await agentic_review_loop(self.llm, messages, executor)

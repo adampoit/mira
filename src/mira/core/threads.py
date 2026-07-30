@@ -1,11 +1,14 @@
+# pyright: standard
+
 """Resolve and verify PR review threads filed in earlier rounds."""
 
 from __future__ import annotations
 
 import logging
 
+from mira.llm.base import LLMProviderProtocol
 from mira.llm.prompts.verify_fixes import build_verify_fixes_prompt, parse_verify_fixes_response
-from mira.llm.provider import LLMProvider
+from mira.llm.tool_schemas import SUBMIT_VERIFY_FIXES_TOOL
 from mira.models import PRInfo, ThreadDecision, UnresolvedThread
 from mira.providers.base import BaseProvider
 
@@ -71,20 +74,24 @@ def _extract_sections(
 
 
 async def verify_fixes(
-    llm: LLMProvider,
+    llm: LLMProviderProtocol,
     file_groups: list[tuple[str, str, list[UnresolvedThread]]],
 ) -> list[str]:
     """Ask the LLM which previously-filed review issues are now fixed."""
     prompt = build_verify_fixes_prompt(file_groups)
     logger.debug("Verify-fixes prompt:\n%s", prompt[1]["content"])
-    response = await llm.complete(prompt, json_mode=True, temperature=0.0)
+    response = await llm.complete_with_tools(
+        prompt,
+        tools=[SUBMIT_VERIFY_FIXES_TOOL],
+        temperature=0.0,
+    )
     logger.debug("Verify-fixes raw response:\n%s", response)
     return parse_verify_fixes_response(response)
 
 
 async def resolve_verified_threads(
     provider: BaseProvider,
-    llm: LLMProvider,
+    llm: LLMProviderProtocol,
     pr_info: PRInfo,
     bot_name: str | None,
     dry_run: bool,
