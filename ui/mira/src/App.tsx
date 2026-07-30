@@ -1,5 +1,11 @@
 import { useEffect, useState } from "react"
-import { BrowserRouter, Navigate, Route, Routes } from "react-router"
+import {
+  BrowserRouter,
+  Navigate,
+  Route,
+  Routes,
+  useLocation,
+} from "react-router"
 
 import { DashboardLayout } from "@/components/dashboard/layout"
 import { SetupModal } from "@/components/dashboard/setup-modal"
@@ -16,6 +22,8 @@ import { LearningFormPage } from "@/pages/learning-form"
 import { LoginPage } from "@/pages/login"
 import { PackagesPage } from "@/pages/packages"
 import { RepoDetailPage } from "@/pages/repo-detail"
+import { ReviewSessionPage } from "@/pages/review-session"
+import { ReviewsPage } from "@/pages/reviews"
 import { RelationshipsPage } from "@/pages/relationships"
 import { ReposPage } from "@/pages/repos"
 import { SettingsPage } from "@/pages/settings"
@@ -33,6 +41,7 @@ const API_BASE = import.meta.env.VITE_API_URL || ""
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const { user, loading } = useAuth()
+  const location = useLocation()
 
   if (loading) {
     return (
@@ -43,7 +52,8 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
   }
 
   if (!user) {
-    return <Navigate to="/login" replace />
+    const next = `${location.pathname}${location.search}`
+    return <Navigate to={`/login?next=${encodeURIComponent(next)}`} replace />
   }
 
   return <>{children}</>
@@ -202,10 +212,15 @@ export function App() {
         >
           <Route index element={<DashboardPage />} />
           <Route path="activity" element={<ActivityPage />} />
+          <Route path="reviews" element={<ReviewsPage />} />
+          <Route path="reviews/:sessionId" element={<ReviewSessionPage />} />
           <Route path="repos" element={<ReposPage />} />
           <Route path="repos/:owner/:repo" element={<RepoDetailPage />} />
           <Route path="contributors" element={<ContributorsPage />} />
-          <Route path="contributors/:login" element={<ContributorDetailPage />} />
+          <Route
+            path="contributors/:login"
+            element={<ContributorDetailPage />}
+          />
           <Route path="packages" element={<PackagesPage />} />
           <Route path="relationships" element={<RelationshipsPage />} />
           <Route path="rules" element={<RulesPage />} />

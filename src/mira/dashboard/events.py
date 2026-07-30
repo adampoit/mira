@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from collections.abc import Mapping
 from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
@@ -17,14 +18,17 @@ logger = logging.getLogger(__name__)
 @dataclass
 class Event:
     type: str
-    data: dict
+    data: dict[str, object]
 
 
 class EventBus:
     """In-memory pub-sub for dashboard events. One queue per subscriber."""
 
+    _subscribers: set[asyncio.Queue[Event]]
+    _lock: asyncio.Lock
+
     def __init__(self) -> None:
-        self._subscribers: set[asyncio.Queue[Event]] = set()
+        self._subscribers = set()
         self._lock = asyncio.Lock()
 
     async def subscribe(self) -> asyncio.Queue[Event]:
@@ -37,13 +41,13 @@ class EventBus:
         async with self._lock:
             self._subscribers.discard(q)
 
-    def emit(self, event_type: str, data: dict | None = None) -> None:
+    def emit(self, event_type: str, data: Mapping[str, object] | None = None) -> None:
         """Broadcast an event to all subscribers. Safe to call from any thread."""
-        event = Event(type=event_type, data=data or {})
+        event = Event(type=event_type, data=dict(data or {}))
         # Use create_task so sync callers don't need await
         try:
-            loop = asyncio.get_event_loop()
-            loop.create_task(self._broadcast(event))
+            loop = asyncio.get_running_loop()
+            _ = loop.create_task(self._broadcast(event))
         except RuntimeError:
             # No running loop (called from sync context) — best effort
             pass

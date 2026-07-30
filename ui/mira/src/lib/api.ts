@@ -9,6 +9,7 @@ import { packagesApi } from "./api/packages"
 import { relationshipsApi } from "./api/relationships"
 import { reposApi } from "./api/repos"
 import { reviewInsightsApi } from "./api/review-insights"
+import { reviewsApi } from "./api/reviews"
 import { rulesApi } from "./api/rules"
 import { settingsApi } from "./api/settings"
 import { statsApi } from "./api/stats"
@@ -25,6 +26,7 @@ export const api = {
   ...settingsApi,
   ...statsApi,
   ...reposApi,
+  ...reviewsApi,
   ...packagesApi,
   ...vulnerabilitiesApi,
   ...relationshipsApi,

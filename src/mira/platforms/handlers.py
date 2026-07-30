@@ -25,6 +25,7 @@ from mira.llm.prompts.review import build_conversation_prompt
 from mira.llm.review_factory import create_review_llms
 from mira.llm.tool_schemas import SUBMIT_THREAD_REPLY_TOOL
 from mira.llm.utils import strip_code_fences, strip_think_blocks
+from mira.models import ReviewComment, ReviewResult
 
 logger = logging.getLogger(__name__)
 
@@ -227,6 +228,13 @@ async def run_pr_review(
         bot_name=bot_name,
         indexing_llm=indexing_llm,
     )
+    engine = _with_review_trace(
+        engine,
+        owner=owner,
+        repo=repo,
+        number=number,
+        pr_title=pr_title,
+    )
 
     from mira.dashboard.api import _app_db
 
@@ -330,6 +338,13 @@ async def run_pr_command(
         if not review_tracker.try_start(repo_full, number, pr_title, pr_url):
             logger.info("Review already in progress for %s, skipping", pr_url)
             return
+        engine = _with_review_trace(
+            engine,
+            owner=owner,
+            repo=repo,
+            number=number,
+            pr_title=pr_title,
+        )
         logger.info(
             "review-rest on %s by @%s — %d file(s)", pr_url, actor, len(progress.skipped_paths)
         )
@@ -350,6 +365,13 @@ async def run_pr_command(
         if not review_tracker.try_start(repo_full, number, pr_title, pr_url):
             logger.info("Review already in progress for %s, skipping", pr_url)
             return
+        engine = _with_review_trace(
+            engine,
+            owner=owner,
+            repo=repo,
+            number=number,
+            pr_title=pr_title,
+        )
         logger.info("Re-review triggered for %s by @%s", pr_url, actor)
         try:
             await _run_review_with_check(provider, engine, pr_url)
@@ -453,6 +475,100 @@ async def run_thread_reply(
             logger.debug("Failed to record disagreement feedback: %s", fb_err)
 
     logger.info("Thread reply (%s) on %s: %s", intent, pr_info.url, reply_text[:80])
+
+
+def _trace_finding(comment: ReviewComment) -> dict[str, object]:
+    return {
+        "title": comment.title,
+        "path": comment.path,
+        "line": comment.line,
+        "severity": comment.severity.name.lower(),
+        "category": comment.category,
+        "confidence": comment.confidence,
+        "explanation": comment.body,
+    }
+
+
+class _ReviewTraceEngine:
+    def __init__(
+        self,
+        engine: ReviewEngine,
+        *,
+        owner: str,
+        repo: str,
+        number: int,
+        pr_title: str,
+    ) -> None:
+        self._engine = engine
+        self._owner = owner
+        self._repo = repo
+        self._number = number
+        self._pr_title = pr_title
+
+    async def review_pr(self, pr_url: str) -> ReviewResult:
+        from mira.dashboard.review_traces import store
+
+        trace = store.start_details(
+            owner=self._owner,
+            repo=self._repo,
+            pr_number=self._number,
+            pr_title=self._pr_title,
+            pr_url=pr_url,
+        )
+        agent = {"pass": "review", "agent_id": 1}
+        trace.emit(
+            "action",
+            "Review agent 1 started",
+            "Mira is analyzing the pull request.",
+            agent,
+        )
+
+        try:
+            result = await self._engine.review_pr(pr_url)
+        except Exception as exc:
+            trace.emit("error", "Review stopped", str(exc), agent)
+            store.finish(trace.session_id, "failed", str(exc))
+            raise
+
+        findings = [_trace_finding(comment) for comment in result.comments]
+        trace.emit(
+            "decision",
+            "Review agent 1 complete",
+            f"Returned {len(findings)} final finding(s).",
+            {**agent, "findings": findings},
+        )
+        trace.emit(
+            "finding" if findings else "complete",
+            "Final review prepared",
+            result.summary or "No actionable issues survived review.",
+            {"findings": findings, "token_usage": result.token_usage},
+        )
+        trace.emit(
+            "complete",
+            "Review complete",
+            f"Posted {len(findings)} finding(s).",
+            {"findings": len(findings)},
+        )
+        store.finish(trace.session_id, "completed")
+        return result
+
+
+def _with_review_trace(
+    engine: ReviewEngine,
+    *,
+    owner: str,
+    repo: str,
+    number: int,
+    pr_title: str,
+) -> ReviewEngine:
+    traced_engine = _ReviewTraceEngine(
+        engine,
+        owner=owner,
+        repo=repo,
+        number=number,
+        pr_title=pr_title,
+    )
+    return cast(ReviewEngine, cast(object, traced_engine))
 
 
 async def run_pr_merged_learning(
