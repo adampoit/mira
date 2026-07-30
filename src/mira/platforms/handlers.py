@@ -892,3 +892,17 @@ async def run_pr_merged_learning(
         deterministic_rules,
         llm_rules,
     )
+
+
+def _install_review_queue() -> None:
+    from mira.core.review_queue import queue_pr_commands, queue_pr_reviews
+
+    global run_pr_command, run_pr_review
+    run_pr_review = queue_pr_reviews(run_pr_review)
+    run_pr_command = queue_pr_commands(
+        run_pr_command,
+        _REVIEW_KEYWORDS | _REVIEW_REST_KEYWORDS,
+    )
+
+
+_install_review_queue()
