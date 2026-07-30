@@ -462,7 +462,11 @@ async def index_repo(
     fetch_sem = asyncio.Semaphore(_FILE_FETCH_SEMAPHORE)
     indexable_set = set(indexable)
     tarball: dict[str, str] | None = await fetcher.repo_tarball(
-        owner, repo, branch, max_file_size=max_file_size, indexable_paths=indexable_set,
+        owner,
+        repo,
+        branch,
+        max_file_size=max_file_size,
+        indexable_paths=indexable_set,
     )
 
     if tarball is not None:

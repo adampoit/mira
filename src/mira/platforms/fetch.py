@@ -44,11 +44,21 @@ class RepoFetcher(Protocol):
     ) -> str | None: ...
 
     async def repo_tarball(
-        self, owner: str, repo: str, ref: str, max_file_size: int = 1_048_576, indexable_paths: set[str] | None = None,
+        self,
+        owner: str,
+        repo: str,
+        ref: str,
+        max_file_size: int = 1_048_576,
+        indexable_paths: set[str] | None = None,
     ) -> dict[str, str] | None: ...
 
 
-def _strip_tarball(blob: bytes, max_file_size: int, label: str, indexable_paths: set[str] | None = None,) -> dict[str, str] | None:
+def _strip_tarball(
+    blob: bytes,
+    max_file_size: int,
+    label: str,
+    indexable_paths: set[str] | None = None,
+) -> dict[str, str] | None:
     """Decode a gzipped tarball into ``{repo-relative path: text}``.
 
     Both GitHub and GitLab wrap files under a single top-level dir
@@ -138,7 +148,12 @@ class GitHubRepoFetcher:
         return await _fetch()
 
     async def repo_tarball(
-        self, owner: str, repo: str, ref: str, max_file_size: int = 1_048_576, indexable_paths: set[str] | None = None,
+        self,
+        owner: str,
+        repo: str,
+        ref: str,
+        max_file_size: int = 1_048_576,
+        indexable_paths: set[str] | None = None,
     ) -> dict[str, str] | None:
         url = f"{self._api}/repos/{owner}/{repo}/tarball/{ref}"
         headers = {**self._headers(), "User-Agent": "mira-indexer"}
@@ -234,7 +249,12 @@ class GitLabRepoFetcher:
         return await _fetch()
 
     async def repo_tarball(
-        self, owner: str, repo: str, ref: str, max_file_size: int = 1_048_576, indexable_paths: set[str] | None = None,
+        self,
+        owner: str,
+        repo: str,
+        ref: str,
+        max_file_size: int = 1_048_576,
+        indexable_paths: set[str] | None = None,
     ) -> dict[str, str] | None:
         url = f"{self._project(owner, repo)}/repository/archive.tar.gz?sha={ref}"
         try:
@@ -328,7 +348,12 @@ class ForgejoRepoFetcher:
         return await _fetch()
 
     async def repo_tarball(
-        self, owner: str, repo: str, ref: str, max_file_size: int = 1_048_576, indexable_paths: set[str] | None = None,
+        self,
+        owner: str,
+        repo: str,
+        ref: str,
+        max_file_size: int = 1_048_576,
+        indexable_paths: set[str] | None = None,
     ) -> dict[str, str] | None:
         url = f"{self._repo(owner, repo)}/archive/{ref}.tar.gz"
         try:
