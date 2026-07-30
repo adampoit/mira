@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import json
+from typing import cast
+
 from mira.llm.utils import strip_code_fences, strip_think_blocks
 from mira.models import UnresolvedThread
 
@@ -77,9 +80,9 @@ def build_verify_fixes_prompt(
         for idx, t in enumerate(threads, 1):
             line_label = f"Line {t.line}" if t.line > 0 else "Location unknown (outdated comment)"
             outdated_tag = " [OUTDATED — code has changed]" if t.is_outdated else ""
+            description = _extract_issue_description(t.body)
             issue_lines.append(
-                f'{idx}. (id: "{t.thread_id}") {line_label}{outdated_tag}: '
-                f"{_extract_issue_description(t.body)}"
+                f'{idx}. (id: "{t.thread_id}") {line_label}{outdated_tag}: {description}'
             )
         issues = "\n".join(issue_lines)
         sections.append(
@@ -110,7 +113,7 @@ def build_verify_fixes_prompt(
                 "pattern described in the issue is still clearly present.\n\n"
                 "Issues tagged [OUTDATED] have been flagged by GitHub as having "
                 "changed code around them — these are very likely fixed.\n\n"
-                "Respond with ONLY the JSON object below, no other text:\n"
+                "Submit one result for every issue using this structure:\n"
                 '{"results": [{"id": "<thread_id>", "fixed": true/false}, ...]}'
             ),
         },
@@ -118,23 +121,26 @@ def build_verify_fixes_prompt(
     ]
 
 
-def parse_verify_fixes_response(raw: str) -> list[str]:
+def parse_verify_fixes_response(raw: str | None) -> list[str]:
     """Parse the LLM response and return thread IDs confirmed as fixed."""
-    import json
-
     try:
-        data = json.loads(strip_think_blocks(strip_code_fences(raw)))
+        decoded = cast(object, json.loads(strip_think_blocks(strip_code_fences(raw))))
     except (json.JSONDecodeError, TypeError):
         return []
+    if not isinstance(decoded, dict):
+        return []
 
+    data = cast(dict[str, object], decoded)
     results = data.get("results")
     if not isinstance(results, list):
         return []
 
     fixed_ids: list[str] = []
-    for entry in results:
-        if not isinstance(entry, dict):
+    for value in cast(list[object], results):
+        if not isinstance(value, dict):
             continue
-        if entry.get("fixed") is True and isinstance(entry.get("id"), str):
-            fixed_ids.append(entry["id"])
+        entry = cast(dict[str, object], value)
+        thread_id = entry.get("id")
+        if entry.get("fixed") is True and isinstance(thread_id, str):
+            fixed_ids.append(thread_id)
     return fixed_ids

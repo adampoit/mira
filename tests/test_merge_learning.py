@@ -1,3 +1,5 @@
+# pyright: standard, reportArgumentType=false, reportPrivateImportUsage=false, reportUnusedParameter=false
+
 """Tests for merge-time learning: bot-metadata parsing, accept/reject synthesis,
 LLM-powered human-review synthesis, and webhook routing of merged PRs."""
 
@@ -10,6 +12,7 @@ import pytest
 
 from mira.analysis.feedback import synthesize_from_human_reviews, synthesize_rules
 from mira.index.store import IndexStore
+from mira.llm.tool_schemas import SUBMIT_FEEDBACK_RULES_TOOL
 from mira.models import BotThreadRecord, HumanReviewComment
 from mira.providers.github import parse_bot_comment_metadata
 
@@ -197,7 +200,7 @@ class TestSynthesizeFromHumanReviews:
         _fb(store, signal="human_review", category="human_review")
         n = await synthesize_from_human_reviews(store, llm)
         assert n == 0
-        llm.complete.assert_not_called()
+        llm.complete_with_tools.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_calls_llm_and_stores_rules(self, store):
@@ -216,7 +219,7 @@ class TestSynthesizeFromHumanReviews:
             )
 
         llm = AsyncMock()
-        llm.complete.return_value = json.dumps(
+        llm.complete_with_tools.return_value = json.dumps(
             {
                 "rules": [
                     {
@@ -235,7 +238,8 @@ class TestSynthesizeFromHumanReviews:
 
         n = await synthesize_from_human_reviews(store, llm)
         assert n == 2
-        llm.complete.assert_called_once()
+        llm.complete_with_tools.assert_awaited_once()
+        assert llm.complete_with_tools.await_args.kwargs["tools"] == [SUBMIT_FEEDBACK_RULES_TOOL]
         # Verify stored as human_pattern source
         rules = store.list_learned_rules()
         human_rules = [r for r in rules if r.source_signal == "human_pattern"]
@@ -256,7 +260,7 @@ class TestSynthesizeFromHumanReviews:
                 actor="u",
             )
         llm = AsyncMock()
-        llm.complete.return_value = "this is not json"
+        llm.complete_with_tools.return_value = "this is not json"
         assert await synthesize_from_human_reviews(store, llm) == 0
 
     @pytest.mark.asyncio
@@ -274,7 +278,7 @@ class TestSynthesizeFromHumanReviews:
                 actor="u",
             )
         llm = AsyncMock()
-        llm.complete.side_effect = RuntimeError("api down")
+        llm.complete_with_tools.side_effect = RuntimeError("api down")
         assert await synthesize_from_human_reviews(store, llm) == 0
 
 
@@ -505,7 +509,7 @@ async def test_handle_pr_merged_end_to_end(tmp_path, monkeypatch):
     monkeypatch.setattr(mc, "llm_config_for", lambda purpose, base: base)
 
     fake_llm = MagicMock()
-    fake_llm.complete = AsyncMock(
+    fake_llm.complete_with_tools = AsyncMock(
         return_value=json.dumps(
             {
                 "rules": [
@@ -566,7 +570,7 @@ async def test_handle_pr_merged_end_to_end(tmp_path, monkeypatch):
     assert len(by_signal["rejected"]) == 1
 
     # LLM was invoked exactly once for this merge.
-    fake_llm.complete.assert_called_once()
+    fake_llm.complete_with_tools.assert_called_once()
 
     # One human_pattern rule stored.
     rules = store.list_learned_rules()
@@ -575,7 +579,7 @@ async def test_handle_pr_merged_end_to_end(tmp_path, monkeypatch):
     assert "raw sql" in human_rules[0].rule_text.lower()
 
     # ── Dedup on retry ──
-    fake_llm.complete.reset_mock()
+    fake_llm.complete_with_tools.reset_mock()
     mock_provider.get_all_bot_threads.reset_mock()
     mock_provider.get_human_review_comments.reset_mock()
 
@@ -588,6 +592,6 @@ async def test_handle_pr_merged_end_to_end(tmp_path, monkeypatch):
     # Provider fetch methods should not have been called (early return).
     mock_provider.get_all_bot_threads.assert_not_called()
     mock_provider.get_human_review_comments.assert_not_called()
-    fake_llm.complete.assert_not_called()
+    fake_llm.complete_with_tools.assert_not_called()
 
     store.close()

@@ -1,3 +1,5 @@
+# pyright: standard
+
 """AWS Bedrock provider using the Converse API."""
 
 from __future__ import annotations
@@ -339,6 +341,7 @@ class BedrockProvider:
         messages: list[dict[str, str]],
         tools: list[dict],
         temperature: float | None = None,
+        max_tokens: int | None = None,
     ) -> str:
         """Complete using tool calling for structured output."""
         bedrock_tools = [_openai_tool_to_bedrock(t) for t in tools]
@@ -351,6 +354,7 @@ class BedrockProvider:
             messages,
             tool_config=tool_config,
             temperature=temperature,
+            max_tokens=max_tokens,
         )
 
         tool_json = self._extract_tool_use(response)

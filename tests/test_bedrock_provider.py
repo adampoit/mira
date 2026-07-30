@@ -1,3 +1,5 @@
+# pyright: standard
+
 """Tests for the Bedrock LLM provider."""
 
 from __future__ import annotations
@@ -353,6 +355,35 @@ class TestBedrockCompleteWithTools:
         assert tool_spec["name"] == "submit_review"
         assert "inputSchema" in tool_spec
         assert tool_config["toolChoice"] == {"tool": {"name": "submit_review"}}
+
+    @pytest.mark.asyncio
+    @patch("boto3.Session")
+    async def test_structured_completion_honors_max_tokens_override(self, mock_session_cls):
+        from mira.llm.bedrock import BedrockProvider
+
+        mock_client = MagicMock()
+        mock_client.converse.return_value = _mock_tool_use_response()
+        mock_session = MagicMock()
+        mock_session.client.return_value = mock_client
+        mock_session_cls.return_value = mock_session
+
+        provider = BedrockProvider(_bedrock_config(max_tokens=1024))
+        await provider.complete_with_tools(
+            [{"role": "user", "content": "review"}],
+            tools=[
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "submit_review",
+                        "description": "",
+                        "parameters": {"type": "object"},
+                    },
+                }
+            ],
+            max_tokens=8192,
+        )
+
+        assert mock_client.converse.call_args.kwargs["inferenceConfig"]["maxTokens"] == 8192
 
     @pytest.mark.asyncio
     @patch("boto3.Session")
