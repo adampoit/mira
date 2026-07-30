@@ -1,3 +1,5 @@
+# pyright: reportAny=false, reportExplicitAny=false, reportUnknownParameterType=false, reportUnknownVariableType=false, reportUnknownMemberType=false, reportUnknownArgumentType=false, reportPrivateUsage=false, reportUnusedCallResult=false, reportUnusedFunction=false, reportUnusedParameter=false, reportDeprecated=false
+# Platform auth adapters are duck-typed, and FastAPI consumes decorated functions dynamically.
 """FastAPI webhook server — serves GitHub and/or GitLab plus the dashboard UI.
 
 Each platform's events are verified and dispatched by its own module
@@ -87,11 +89,13 @@ def create_app(
 
         # Forgejo's equivalent: discover repos the token can access and
         # register them so they're in the dashboard ready to index up front.
+        fj_task: asyncio.Task[int] | None = None
         if forgejo_auth is not None:
             from mira.platforms.forgejo.webhook import backfill_forgejo_repos
 
-            fj_task = asyncio.create_task(backfill_forgejo_repos(forgejo_auth))
-            fj_task.add_done_callback(
+            task = asyncio.create_task(backfill_forgejo_repos(forgejo_auth))
+            fj_task = task
+            task.add_done_callback(
                 lambda t: (
                     logger.warning("Forgejo discovery failed: %s", t.exception())
                     if t.exception()
@@ -113,12 +117,16 @@ def create_app(
         yield
         if backfill_task is not None and not backfill_task.done():
             backfill_task.cancel()
-        if forgejo_auth is not None and not fj_task.done():
+        if fj_task is not None and not fj_task.done():
             fj_task.cancel()
         if not vuln_task.done():
             vuln_task.cancel()
 
     app = FastAPI(title="Mira", lifespan=lifespan)
+
+    from mira.dashboard.runtime import configure_runtime
+
+    configure_runtime(app_auth, bot_name)
 
     @app.get("/health")
     async def health() -> dict[str, str]:

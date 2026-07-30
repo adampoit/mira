@@ -8,6 +8,7 @@ import {
   GitFork,
   KeyRound,
   LayoutDashboard,
+  ListChecks,
   LogOut,
   Moon,
   Package,
@@ -18,7 +19,7 @@ import {
   Users2,
 } from "lucide-react"
 import { useEffect, useState } from "react"
-import { NavLink, Outlet, useLocation, useNavigate } from "react-router"
+import { Link, NavLink, Outlet, useLocation, useNavigate } from "react-router"
 
 import { useTheme } from "@/components/theme-provider"
 import { api } from "@/lib/api"
@@ -30,7 +31,6 @@ const API_BASE = import.meta.env.VITE_API_URL || ""
 import {
   Breadcrumb,
   BreadcrumbItem,
-  BreadcrumbLink,
   BreadcrumbList,
   BreadcrumbPage,
   BreadcrumbSeparator,
@@ -71,6 +71,7 @@ import { UserAvatar } from "@/components/ui/user-avatar"
 const navItems = [
   { to: "/", icon: LayoutDashboard, label: "Dashboard" },
   { to: "/activity", icon: Activity, label: "Activity" },
+  { to: "/reviews", icon: ListChecks, label: "Reviews" },
   { to: "/repos", icon: Database, label: "Repositories" },
   { to: "/contributors", icon: Users2, label: "Reviewers", adminOnly: true },
   { to: "/packages", icon: Package, label: "Packages" },
@@ -91,6 +92,7 @@ const settingsSubItems = [
 
 const PAGE_LABELS: Record<string, string> = {
   activity: "Activity",
+  reviews: "Reviews",
   repos: "Repositories",
   contributors: "Reviewers",
   packages: "Packages",
@@ -168,9 +170,12 @@ function AppBreadcrumb() {
               {i === parts.length - 1 ? (
                 <BreadcrumbPage>{label(part, i)}</BreadcrumbPage>
               ) : (
-                <BreadcrumbLink href={hrefFor(i)}>
+                <Link
+                  to={hrefFor(i)}
+                  className="transition-colors hover:text-foreground"
+                >
                   {label(part, i)}
-                </BreadcrumbLink>
+                </Link>
               )}
             </BreadcrumbItem>
           </span>
@@ -214,7 +219,7 @@ export function DashboardLayout() {
           <SidebarMenu>
             <SidebarMenuItem>
               <SidebarMenuButton size="lg" asChild>
-                <a href="/">
+                <Link to="/">
                   <div className="flex aspect-square size-8 items-center justify-center">
                     <img
                       src="/logo.png"
@@ -235,7 +240,7 @@ export function DashboardLayout() {
                       </span>
                     )}
                   </div>
-                </a>
+                </Link>
               </SidebarMenuButton>
             </SidebarMenuItem>
           </SidebarMenu>

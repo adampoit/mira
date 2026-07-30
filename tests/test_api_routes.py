@@ -8,6 +8,8 @@ deliberately when you intend a route change.
 
 from __future__ import annotations
 
+from fastapi.routing import APIRoute
+
 from mira.dashboard.api import router
 
 EXPECTED_ROUTES = {
@@ -55,6 +57,9 @@ EXPECTED_ROUTES = {
     ("/api/review-insights/summary", "GET"),
     ("/api/review-insights/open-prs", "GET"),
     ("/api/review-insights/reviewers", "GET"),
+    ("/api/reviews", "GET"),
+    ("/api/reviews/{session_id}", "GET"),
+    ("/api/reviews/{session_id}/retrigger", "POST"),
     ("/api/repos/sync", "POST"),
     ("/api/repos/{owner}/{repo}", "GET"),
     ("/api/repos/{owner}/{repo}/blast-radius", "GET"),
@@ -97,11 +102,13 @@ EXPECTED_ROUTES = {
 
 
 def _actual_routes() -> set[tuple[str, str]]:
-    out = set()
-    for r in router.routes:
-        for method in r.methods:
+    out: set[tuple[str, str]] = set()
+    for route in router.routes:
+        if not isinstance(route, APIRoute):
+            continue
+        for method in route.methods:
             if method != "HEAD":
-                out.add((r.path, method))
+                out.add((route.path, method))
     return out
 
 

@@ -1,5 +1,5 @@
 import { useState } from "react"
-import { Navigate } from "react-router"
+import { Navigate, useSearchParams } from "react-router"
 
 import { Button } from "@/components/ui/button"
 import {
@@ -16,6 +16,12 @@ import { useDocumentTitle } from "@/lib/hooks"
 export function LoginPage() {
   useDocumentTitle("Sign in")
   const { user, loading, login } = useAuth()
+  const [searchParams] = useSearchParams()
+  const requestedPath = searchParams.get("next")
+  const destination =
+    requestedPath?.startsWith("/") && !requestedPath.startsWith("//")
+      ? requestedPath
+      : "/"
   const [username, setUsername] = useState("")
   const [password, setPassword] = useState("")
   const [error, setError] = useState<string | null>(null)
@@ -30,10 +36,10 @@ export function LoginPage() {
   }
 
   if (user) {
-    return <Navigate to="/" replace />
+    return <Navigate to={destination} replace />
   }
 
-  const handleSubmit = async (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.SubmitEvent<HTMLFormElement>) => {
     e.preventDefault()
     setError(null)
     setSubmitting(true)
@@ -46,12 +52,18 @@ export function LoginPage() {
     <div className="flex min-h-screen items-center justify-center bg-background px-4">
       <Card className="w-full max-w-sm">
         <CardHeader className="text-center">
-          <img src="/logo.png" alt="Mira" className="mx-auto mb-2 hidden h-10 w-10 dark:block" />
-          <img src="/logo-light.png" alt="Mira" className="mx-auto mb-2 h-10 w-10 dark:hidden" />
+          <img
+            src="/logo.png"
+            alt="Mira"
+            className="mx-auto mb-2 hidden h-10 w-10 dark:block"
+          />
+          <img
+            src="/logo-light.png"
+            alt="Mira"
+            className="mx-auto mb-2 h-10 w-10 dark:hidden"
+          />
           <CardTitle className="text-xl">Sign in to Mira</CardTitle>
-          <CardDescription>
-            Enter your credentials to continue
-          </CardDescription>
+          <CardDescription>Enter your credentials to continue</CardDescription>
         </CardHeader>
         <CardContent>
           <form onSubmit={handleSubmit} className="space-y-4">
@@ -71,9 +83,7 @@ export function LoginPage() {
                 onChange={(e) => setPassword(e.target.value)}
               />
             </div>
-            {error && (
-              <p className="text-sm text-destructive">{error}</p>
-            )}
+            {error && <p className="text-sm text-destructive">{error}</p>}
             <Button
               type="submit"
               className="w-full"

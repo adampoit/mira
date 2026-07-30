@@ -174,6 +174,26 @@ export interface ActivityEventModel extends ReviewEventModel {
   author_avatar_url: string
 }
 
+export interface ReviewTraceSummary {
+  id: string
+  status: "running" | "completed" | "failed"
+  owner: string
+  repo: string
+  pr_number: number
+  pr_title: string
+  pr_url: string
+  head_sha: string
+  started_at: number
+  finished_at: number | null
+  current_pass: string | null
+  current_agent: number | null
+  findings: number
+  agent_count: number
+  completed_agents: number
+  event_count: number
+  error?: string
+}
+
 export interface ActivityResponse {
   events: ActivityEventModel[]
   repos: string[]
@@ -343,7 +363,8 @@ export interface ContributorSummary {
   previous: ContributionWindow
 }
 
-export type ContributorSort = "commits" | "prs" | "reviews" | "recent" | "additions"
+export type ContributorSort =
+  "commits" | "prs" | "reviews" | "recent" | "additions"
 export type StatsPeriod = "day" | "week" | "month"
 
 // ── Review insights ──
