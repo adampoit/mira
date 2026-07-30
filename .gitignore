@@ -64,3 +64,6 @@ ui/mira/.vite/
 
 # Claude Code workspace artifacts
 .claude/
+
+# Pi worker
+integrations/mira-pi-worker/node_modules/

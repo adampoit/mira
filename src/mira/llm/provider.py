@@ -1,3 +1,5 @@
+# pyright: standard
+
 """OpenAI-compatible API provider with retry/fallback and tool calling support.
 
 Per-provider quirks (attribution headers, model-prefix policy, reasoning
@@ -192,6 +194,7 @@ class LLMProvider:
         messages: list[dict[str, str]],
         tools: list[dict],
         temperature: float | None = None,
+        max_tokens: int | None = None,
     ) -> str:
         """Make an LLM call with tool/function calling and retries.
 
@@ -211,7 +214,7 @@ class LLMProvider:
             # forced choice fall back to "auto" (handled on the 400 below).
             "tool_choice": "auto" if api_model in self._no_forced_tool_choice else forced_choice,
             "temperature": temperature if temperature is not None else self.config.temperature,
-            "max_tokens": self.config.max_tokens,
+            "max_tokens": max_tokens if max_tokens is not None else self.config.max_tokens,
         }
         self._apply_reasoning(body)
 
@@ -405,6 +408,7 @@ class LLMProvider:
         messages: list[dict[str, str]],
         tools: list[dict],
         temperature: float | None = None,
+        max_tokens: int | None = None,
     ) -> str:
         """Complete a prompt using tool calling for structured output.
 
@@ -415,13 +419,18 @@ class LLMProvider:
             messages: The prompt messages.
             tools: Tool schemas in OpenAI function-calling format.
             temperature: Override the default temperature.
+            max_tokens: Override the configured output-token limit.
 
         Returns:
             The JSON string from the tool call arguments.
         """
         try:
             return await self._call_llm_with_tools(
-                self.config.model, messages, tools, temperature=temperature
+                self.config.model,
+                messages,
+                tools,
+                temperature=temperature,
+                max_tokens=max_tokens,
             )
         except NonRetriableLLMError:
             raise
@@ -435,7 +444,11 @@ class LLMProvider:
                 )
                 try:
                     return await self._call_llm_with_tools(
-                        self.config.fallback_model, messages, tools, temperature=temperature
+                        self.config.fallback_model,
+                        messages,
+                        tools,
+                        temperature=temperature,
+                        max_tokens=max_tokens,
                     )
                 except Exception as fallback_err:
                     raise LLMError(

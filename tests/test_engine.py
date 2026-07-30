@@ -1,3 +1,5 @@
+# pyright: standard, reportAttributeAccessIssue=false, reportOptionalMemberAccess=false, reportUnusedParameter=false
+
 """Tests for review engine."""
 
 from __future__ import annotations
@@ -795,7 +797,7 @@ class TestDryRun:
         llm.count_tokens = MagicMock(return_value=100)
         llm.usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
 
-        llm.complete = AsyncMock(return_value=verify_response)
+        llm.complete_with_tools = AsyncMock(return_value=verify_response)
         llm.walkthrough = AsyncMock(
             return_value=json.dumps({"summary": "walkthrough", "change_groups": []})
         )
@@ -812,8 +814,8 @@ class TestDryRun:
         provider.get_unresolved_bot_threads.assert_awaited_once()
         provider.get_file_content.assert_awaited()
 
-        # LLM should be called (verify-fixes via complete, walkthrough + review)
-        assert llm.complete.call_count >= 1
+        # LLM should be called (verify-fixes via typed tool, walkthrough + review)
+        assert llm.complete_with_tools.call_count >= 1
 
         # Write operations should NOT be called
         provider.resolve_threads.assert_not_called()
@@ -910,7 +912,7 @@ class TestThreadResolution:
         llm.count_tokens = MagicMock(return_value=100)
         llm.usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
 
-        llm.complete = AsyncMock(return_value=verify_response)
+        llm.complete_with_tools = AsyncMock(return_value=verify_response)
         llm.walkthrough = AsyncMock(
             return_value=json.dumps({"summary": "walkthrough", "change_groups": []})
         )
@@ -973,7 +975,7 @@ class TestThreadResolution:
         llm.count_tokens = MagicMock(return_value=100)
         llm.usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
 
-        llm.complete = AsyncMock(return_value=verify_response)
+        llm.complete_with_tools = AsyncMock(return_value=verify_response)
         llm.walkthrough = AsyncMock(
             return_value=json.dumps({"summary": "walkthrough", "change_groups": []})
         )
@@ -985,8 +987,12 @@ class TestThreadResolution:
         await engine.review_pr("https://github.com/test/repo/pull/1")
 
         # Verify the LLM was called with line-numbered file content in the prompt
-        verify_call = llm.complete.call_args_list[0]
-        prompt_content = verify_call[0][0][1]["content"]
+        verify_call = next(
+            call
+            for call in llm.complete_with_tools.call_args_list
+            if call.kwargs["tools"][0]["function"]["name"] == "submit_fix_verification"
+        )
+        prompt_content = verify_call.args[0][1]["content"]
         # Content should be line-numbered (e.g. "  1| line")
         assert "1| line" in prompt_content
         assert "100| line" in prompt_content
@@ -1008,7 +1014,7 @@ class TestThreadResolution:
         llm.count_tokens = MagicMock(return_value=100)
         llm.usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
 
-        llm.complete = AsyncMock(return_value=verify_response)
+        llm.complete_with_tools = AsyncMock(return_value=verify_response)
         llm.walkthrough = AsyncMock(
             return_value=json.dumps({"summary": "walkthrough", "change_groups": []})
         )

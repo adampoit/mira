@@ -1,3 +1,5 @@
+# pyright: standard
+
 """Configuration loading and validation for Mira."""
 
 from __future__ import annotations
@@ -6,7 +8,7 @@ import ipaddress
 import logging
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import urlparse
 
 import yaml
@@ -154,6 +156,7 @@ class OverlapConfig(BaseModel):
 
 
 class ReviewConfig(BaseModel):
+    engine: Literal["pipeline", "pi_agent"] = "pipeline"
     context_lines: int = Field(default=3, ge=0)
     # Total diff size cap. Above this, the diff is *not* truncated arbitrarily —
     # files are ranked by priority and the lowest-priority files are skipped

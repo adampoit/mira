@@ -1,3 +1,5 @@
+# pyright: standard
+
 """LLM-based file summarization pipeline for building the codebase index."""
 
 from __future__ import annotations
@@ -10,7 +12,7 @@ import os
 from collections.abc import Callable
 from fnmatch import fnmatch
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from jinja2 import Environment, FileSystemLoader
 
@@ -18,6 +20,11 @@ from mira.config import MiraConfig, load_config
 from mira.index.manifests import is_manifest, parse_manifest
 from mira.index.store import DirectorySummary, ExternalRef, FileSummary, IndexStore, SymbolInfo
 from mira.llm import create_llm
+from mira.llm.tool_schemas import (
+    SUBMIT_DIRECTORY_SUMMARIES_TOOL,
+    SUBMIT_DIRECTORY_SUMMARY_TOOL,
+    SUBMIT_FILE_SUMMARIES_TOOL,
+)
 from mira.llm.utils import strip_think_blocks
 from mira.platforms.fetch import RepoFetcher, make_fetcher
 
@@ -383,9 +390,9 @@ async def _summarize_batch(
             from mira.llm.registry import max_output_tokens
 
             cap = min(max_output_tokens(llm.config.model, default=16384), 32768)
-            raw = await llm.complete(
+            raw = await llm.complete_with_tools(
                 messages,
-                json_mode=True,
+                tools=[SUBMIT_FILE_SUMMARIES_TOOL],
                 temperature=0.0,
                 max_tokens=cap,
             )
@@ -434,7 +441,7 @@ async def index_repo(
 
         llm = create_llm(llm_config_for("indexing", config.llm))
     if store is None:
-        store = IndexStore.open(owner, repo)
+        store = cast(IndexStore, IndexStore.open(owner, repo))
     # Back-compat: callers that pass a raw GitHub token get a GitHub fetcher.
     if fetcher is None:
         fetcher = make_fetcher("github", token or "")
@@ -791,7 +798,7 @@ async def _summarize_directories(store: IndexStore, llm: Any, semaphore: asyncio
         prompt = (
             "You are a code indexing assistant. For each directory below, "
             "generate a concise 1-2 sentence summary describing what it "
-            "contains and its purpose.\n\n" + "\n\n".join(sections) + "\n\nRespond with JSON: "
+            "contains and its purpose.\n\n" + "\n\n".join(sections) + "\n\nSubmit: "
             '{"directories": [{"path": "<dir>", "summary": "..."}, ...]}. '
             'Use "(root)" as the path for the repo-root directory.'
         )
@@ -801,9 +808,9 @@ async def _summarize_directories(store: IndexStore, llm: Any, semaphore: asyncio
         ]
         async with semaphore:
             try:
-                raw = await llm.complete(
+                raw = await llm.complete_with_tools(
                     messages,
-                    json_mode=True,
+                    tools=[SUBMIT_DIRECTORY_SUMMARIES_TOOL],
                     temperature=0.0,
                     max_tokens=4096,
                 )
@@ -891,7 +898,7 @@ async def index_diff(
 
         llm = create_llm(llm_config_for("indexing", config.llm))
     if store is None:
-        store = IndexStore.open(owner, repo)
+        store = cast(IndexStore, IndexStore.open(owner, repo))
     if fetcher is None:
         fetcher = make_fetcher("github", token or "")
 
@@ -1008,7 +1015,7 @@ async def _summarize_directories_selective(
             f"describing what this directory contains and its purpose.\n\n"
             f"Directory: {display_path} ({len(file_paths)} files)\n"
             + "\n".join(file_summaries)
-            + '\n\nRespond with JSON: {"summary": "..."}'
+            + '\n\nSubmit: {"summary": "..."}'
         )
 
         messages = [
@@ -1018,7 +1025,11 @@ async def _summarize_directories_selective(
 
         async with semaphore:
             try:
-                raw = await llm.complete(messages, json_mode=True, temperature=0.0)
+                raw = await llm.complete_with_tools(
+                    messages,
+                    tools=[SUBMIT_DIRECTORY_SUMMARY_TOOL],
+                    temperature=0.0,
+                )
                 data = json.loads(strip_think_blocks(_strip_code_fences(raw)))
                 summary_text = data.get("summary", "")
                 if summary_text:

@@ -1,0 +1,13 @@
+{
+  "name": "mira-pi-worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "mira-pi-worker": "worker.js"
+  },
+  "dependencies": {
+    "@earendil-works/pi-coding-agent": "0.80.6",
+    "typebox": "^1.0.55"
+  }
+}
