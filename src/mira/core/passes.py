@@ -1,3 +1,5 @@
+# pyright: standard
+
 """Review passes that run alongside the main chunked review.
 
 Each pass takes an `LLMProvider` and the input it needs; none touches the
@@ -9,10 +11,12 @@ from __future__ import annotations
 
 import json as _json
 import logging
+from typing import Protocol
 
 from mira.config import load_config
 from mira.dashboard.models_config import llm_config_for
 from mira.exceptions import ResponseParseError
+from mira.llm.base import LLMProviderProtocol
 from mira.llm.prompts.review import (
     build_dependency_review_prompt,
     build_security_review_prompt,
@@ -29,10 +33,14 @@ from mira.models import KeyIssue, ReviewComment, Severity
 logger = logging.getLogger(__name__)
 
 
+class AgenticToolExecutor(Protocol):
+    async def execute(self, name: str, args: dict) -> str: ...
+
+
 async def agentic_review_loop(
-    llm: LLMProvider,
+    llm: LLMProviderProtocol,
     messages: list[dict],
-    executor: object,
+    executor: AgenticToolExecutor,
 ) -> str:
     """Run an agentic tool-use loop until the LLM submits a review.
 
@@ -99,7 +107,7 @@ async def agentic_review_loop(
             except Exception:
                 args = {}
 
-            tool_result = await executor.execute(name, args)  # type: ignore[attr-defined]
+            tool_result = await executor.execute(name, args)
             convo.append(
                 {
                     "role": "tool",
@@ -112,7 +120,7 @@ async def agentic_review_loop(
     return ""
 
 
-def _indexing_llm(fallback: LLMProvider) -> LLMProvider:
+def _indexing_llm(fallback: LLMProviderProtocol) -> LLMProviderProtocol:
     """Build an indexing-tier provider, falling back to ``fallback`` on error."""
     try:
         return LLMProvider(llm_config_for("indexing", load_config().llm))
@@ -121,11 +129,11 @@ def _indexing_llm(fallback: LLMProvider) -> LLMProvider:
 
 
 async def security_review_pass(
-    llm: LLMProvider,
+    llm: LLMProviderProtocol,
     files: list,
     narrowed: list,
     pr_title: str = "",
-    indexing_llm: LLMProvider | None = None,
+    indexing_llm: LLMProviderProtocol | None = None,
 ) -> list[ReviewComment]:
     """Dedicated security review on the configured indexing model.
 
@@ -192,11 +200,11 @@ async def security_review_pass(
 
 
 async def dependency_review_pass(
-    llm: LLMProvider,
+    llm: LLMProviderProtocol,
     manifest_files: list,
     existing_packages: list[str] | None = None,
     pr_title: str = "",
-    indexing_llm: LLMProvider | None = None,
+    indexing_llm: LLMProviderProtocol | None = None,
 ) -> list[ReviewComment]:
     """Flag newly-added dependencies that duplicate an existing one.
 
@@ -301,11 +309,11 @@ def _critique_keep(verdict: dict, comment: ReviewComment) -> bool:
 
 
 async def self_critique(
-    llm: LLMProvider,
+    llm: LLMProviderProtocol,
     comments: list[ReviewComment],
     learned_rules: list[str] | None = None,
     custom_rules: list[dict[str, str]] | None = None,
-    indexing_llm: LLMProvider | None = None,
+    indexing_llm: LLMProviderProtocol | None = None,
     diff_files: list | None = None,
     audit: list[dict] | None = None,
 ) -> list[ReviewComment]:
@@ -386,7 +394,7 @@ async def self_critique(
             temperature=0.0,
         )
         data = loads_lenient(raw) if raw else {}
-        if data is None:
+        if not isinstance(data, dict):
             data = {}
     except Exception as exc:
         logger.warning("Self-critique LLM call failed: %s. Keeping all drafts.", exc)
@@ -436,13 +444,13 @@ async def self_critique(
 
 
 async def regenerate_summary(
-    llm: LLMProvider,
+    llm: LLMProviderProtocol,
     comments: list[ReviewComment],
     key_issues: list[KeyIssue],
     pr_title: str,
     pr_description: str,
     fallback: str,
-    indexing_llm: LLMProvider | None = None,
+    indexing_llm: LLMProviderProtocol | None = None,
 ) -> str:
     """Rewrite the review summary from the final filed outputs.
 

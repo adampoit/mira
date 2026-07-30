@@ -1,3 +1,5 @@
+# pyright: standard, reportUnusedParameter=false
+
 """Abstract provider interface for code hosting platforms."""
 
 from __future__ import annotations
@@ -16,6 +18,8 @@ from mira.models import (
 
 class BaseProvider(abc.ABC):
     """Abstract base class for code hosting providers."""
+
+    _token: str
 
     @abc.abstractmethod
     def __init__(self, token: str) -> None:
@@ -113,6 +117,14 @@ class BaseProvider(abc.ABC):
     async def get_repo_tree(self, pr_info: PRInfo, ref: str) -> list[str]:
         """Every file path in the repo at a ref, for JIT cross-file context."""
         return []
+
+    async def get_repo_snapshot(self, pr_info: PRInfo, ref: str) -> dict[str, str] | None:
+        """Bulk source snapshot at a ref, when the platform supports archives."""
+        from mira.platforms.fetch import make_fetcher
+
+        return await make_fetcher(pr_info.platform, self._token).repo_tarball(
+            pr_info.owner, pr_info.repo, ref
+        )
 
     async def get_file_history(
         self, pr_info: PRInfo, paths: list[str], max_per_file: int = 5

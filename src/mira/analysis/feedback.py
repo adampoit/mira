@@ -1,3 +1,5 @@
+# pyright: standard
+
 """Synthesise learned rules from accumulated feedback events."""
 
 from __future__ import annotations
@@ -11,6 +13,7 @@ from pathlib import Path
 from jinja2 import Environment, FileSystemLoader
 
 from mira.index.store import IndexStore
+from mira.llm.tool_schemas import SUBMIT_FEEDBACK_RULES_TOOL
 from mira.llm.utils import strip_code_fences, strip_think_blocks
 
 logger = logging.getLogger(__name__)
@@ -167,9 +170,9 @@ async def synthesize_from_human_reviews(store: IndexStore, llm) -> int:  # type:
     prompt = template.render(comments=comments, max_rules=_MAX_LLM_RULES)
 
     try:
-        raw = await llm.complete(
+        raw = await llm.complete_with_tools(
             messages=[{"role": "user", "content": prompt}],
-            json_mode=True,
+            tools=[SUBMIT_FEEDBACK_RULES_TOOL],
             temperature=0.0,
         )
     except Exception as exc:
