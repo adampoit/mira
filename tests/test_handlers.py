@@ -1,13 +1,18 @@
+# pyright: standard, reportUnusedParameter=false
+
 """Tests for webhook event handlers."""
 
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from mira.dashboard import review_traces
+from mira.dashboard.review_traces import TraceStore
 from mira.models import PRInfo, ReviewComment, ReviewResult, Severity
 from mira.platforms.github.webhook import (
     handle_comment,
@@ -16,6 +21,11 @@ from mira.platforms.github.webhook import (
     handle_thread_reject,
 )
 from mira.platforms.handlers import _REJECT_KEYWORDS
+
+
+@pytest.fixture(autouse=True)
+def isolate_review_traces(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(review_traces, "store", TraceStore(tmp_path / "review-traces"))
 
 
 def _make_pr_payload() -> dict[str, Any]:
@@ -84,6 +94,7 @@ async def test_handle_pr_event(
     mock_engine = AsyncMock()
     mock_engine.review_pr = AsyncMock(return_value=ReviewResult(summary="ok"))
     mock_engine_cls.return_value = mock_engine
+    mock_provider_cls.return_value = AsyncMock()
 
     await handle_pull_request(_make_pr_payload(), mock_app_auth, "mira-bot")
 
@@ -119,6 +130,7 @@ async def _run_pr_handler(result: ReviewResult | Exception, mock_engine_cls, moc
     mock_engine_cls.return_value = mock_engine
 
     with (
+        patch("mira.platforms.github.webhook.create_provider", return_value=AsyncMock()),
         patch("mira.dashboard.api._app_db") as mock_db,
         patch("mira.outbound_webhooks.dispatch_event", new_callable=AsyncMock) as mock_dispatch,
     ):
@@ -232,6 +244,7 @@ async def test_handle_comment_review_keyword(
     mock_engine = AsyncMock()
     mock_engine.review_pr = AsyncMock(return_value=ReviewResult(summary="ok"))
     mock_engine_cls.return_value = mock_engine
+    mock_provider_cls.return_value = AsyncMock()
 
     payload = _make_comment_payload("@mira-bot review")
     await handle_comment(payload, mock_app_auth, "mira-bot")
