@@ -60,9 +60,10 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        from mira.dashboard.review_recovery import recover_previous_reviews
         from mira.dashboard.review_traces import store as review_trace_store
 
-        recovered_sessions = review_trace_store.reconcile_previous_instances()
+        recovered_sessions = await recover_previous_reviews(review_store=review_trace_store)
         logger.info("Recovered %d interrupted review session(s)", recovered_sessions)
 
         # Backfill is a GitHub-installation concept; skip it on GitLab-only.
@@ -128,13 +129,19 @@ def create_app(
                 fj_task.cancel()
             if not vuln_task.done():
                 vuln_task.cancel()
+            await review_trace_store.stop_recovery_tasks()
             await review_trace_store.stop_heartbeats()
 
     app = FastAPI(title="Mira", lifespan=lifespan)
 
     from mira.dashboard.runtime import configure_runtime
 
-    configure_runtime(app_auth, bot_name)
+    configure_runtime(
+        app_auth,
+        bot_name,
+        configured_gitlab_auth=gitlab_auth,
+        configured_forgejo_auth=forgejo_auth,
+    )
 
     @app.get("/health")
     async def health() -> dict[str, str]:
