@@ -24,7 +24,7 @@ from mira.llm.prompts.review import build_conversation_prompt
 from mira.llm.review_factory import create_review_llms
 from mira.llm.tool_schemas import SUBMIT_THREAD_REPLY_TOOL
 from mira.llm.utils import strip_code_fences, strip_think_blocks
-from mira.models import ReviewComment, ReviewResult
+from mira.models import PRInfo, ReviewComment, ReviewResult
 
 logger = logging.getLogger(__name__)
 
@@ -203,6 +203,7 @@ async def run_pr_review(
     bot_name: str,
     platform: str = "github",
     pr_title: str = "",
+    trace_session_id: str | None = None,
 ) -> None:
     """Platform-neutral review core: review a PR/MR and post the result.
 
@@ -227,12 +228,17 @@ async def run_pr_review(
         bot_name=bot_name,
         indexing_llm=indexing_llm,
     )
-    engine = _with_review_trace(
+    engine = _with_review_lifecycle(
         engine,
+        provider=provider,
         owner=owner,
         repo=repo,
         number=number,
         pr_title=pr_title,
+        platform=platform,
+        bot_name=bot_name,
+        visibility="private" if is_private else "public",
+        trace_session_id=trace_session_id,
     )
 
     from mira.dashboard.api import _app_db
@@ -334,12 +340,15 @@ async def run_pr_command(
         if not review_tracker.try_start(repo_full, number, pr_title, pr_url):
             logger.info("Review already in progress for %s, skipping", pr_url)
             return
-        engine = _with_review_trace(
+        engine = _with_review_lifecycle(
             engine,
+            provider=provider,
             owner=owner,
             repo=repo,
             number=number,
             pr_title=pr_title,
+            platform=platform,
+            bot_name=bot_name,
         )
         logger.info(
             "review-rest on %s by @%s — %d file(s)", pr_url, actor, len(progress.skipped_paths)
@@ -361,12 +370,15 @@ async def run_pr_command(
         if not review_tracker.try_start(repo_full, number, pr_title, pr_url):
             logger.info("Review already in progress for %s, skipping", pr_url)
             return
-        engine = _with_review_trace(
+        engine = _with_review_lifecycle(
             engine,
+            provider=provider,
             owner=owner,
             repo=repo,
             number=number,
             pr_title=pr_title,
+            platform=platform,
+            bot_name=bot_name,
         )
         logger.info("Re-review triggered for %s by @%s", pr_url, actor)
         try:
@@ -485,86 +497,116 @@ def _trace_finding(comment: ReviewComment) -> dict[str, object]:
     }
 
 
-class _ReviewTraceEngine:
+class _ReviewLifecycleEngine:
     def __init__(
         self,
         engine: ReviewEngine,
         *,
+        provider: Any,
         owner: str,
         repo: str,
         number: int,
         pr_title: str,
+        platform: str,
+        bot_name: str,
+        visibility: str,
+        trace_session_id: str | None,
     ) -> None:
         self._engine = engine
+        self._provider = provider
         self._owner = owner
         self._repo = repo
         self._number = number
         self._pr_title = pr_title
+        self._platform = platform
+        self._bot_name = bot_name
+        self._visibility = visibility
+        self._trace_session_id = trace_session_id
 
     async def review_pr(self, pr_url: str) -> ReviewResult:
-        from mira.dashboard.review_traces import store
+        from mira.dashboard.review_traces import review_lifecycle
 
-        trace = store.start_details(
+        retry_request: dict[str, object] = {
+            "platform": self._platform,
+            "owner": self._owner,
+            "repo": self._repo,
+            "pr_number": self._number,
+            "pr_url": pr_url,
+            "pr_title": self._pr_title,
+            "bot_name": self._bot_name,
+            "visibility": self._visibility,
+        }
+        async with review_lifecycle(
             owner=self._owner,
             repo=self._repo,
-            pr_number=self._number,
+            number=self._number,
             pr_title=self._pr_title,
             pr_url=pr_url,
-        )
-        agent = {"pass": "review", "agent_id": 1}
-        trace.emit(
-            "action",
-            "Review agent 1 started",
-            "Mira is analyzing the pull request.",
-            agent,
-        )
-
-        try:
+            retry_request=retry_request,
+            session_id=self._trace_session_id,
+            already_claimed=True,
+        ) as trace:
+            if trace is None:
+                raise RuntimeError("Review lifecycle lost its active claim")
+            pr_info = await self._provider.get_pr_info(pr_url)
+            if isinstance(pr_info, PRInfo):
+                trace.update_context(pr_info)
+            agent = {"pass": "review", "agent_id": 1}
+            trace.emit(
+                "action",
+                "Review agent 1 started",
+                "Mira is analyzing the pull request.",
+                agent,
+            )
             result = await self._engine.review_pr(pr_url)
-        except Exception as exc:
-            trace.emit("error", "Review stopped", str(exc), agent)
-            store.finish(trace.session_id, "failed", str(exc))
-            raise
-
-        findings = [_trace_finding(comment) for comment in result.comments]
-        trace.emit(
-            "decision",
-            "Review agent 1 complete",
-            f"Returned {len(findings)} final finding(s).",
-            {**agent, "findings": findings},
-        )
-        trace.emit(
-            "finding" if findings else "complete",
-            "Final review prepared",
-            result.summary or "No actionable issues survived review.",
-            {"findings": findings, "token_usage": result.token_usage},
-        )
-        trace.emit(
-            "complete",
-            "Review complete",
-            f"Posted {len(findings)} finding(s).",
-            {"findings": len(findings)},
-        )
-        store.finish(trace.session_id, "completed")
-        return result
+            findings = [_trace_finding(comment) for comment in result.comments]
+            trace.emit(
+                "decision",
+                "Review agent 1 complete",
+                f"Returned {len(findings)} final finding(s).",
+                {**agent, "findings": findings},
+            )
+            trace.emit(
+                "finding" if findings else "complete",
+                "Final review prepared",
+                result.summary or "No actionable issues survived review.",
+                {"findings": findings, "token_usage": result.token_usage},
+            )
+            trace.emit(
+                "complete",
+                "Review complete",
+                f"Posted {len(findings)} finding(s).",
+                {"findings": len(findings)},
+            )
+            return result
 
 
-def _with_review_trace(
+def _with_review_lifecycle(
     engine: ReviewEngine,
     *,
+    provider: Any,
     owner: str,
     repo: str,
     number: int,
     pr_title: str,
+    platform: str,
+    bot_name: str,
+    visibility: str = "unknown",
+    trace_session_id: str | None = None,
 ) -> ReviewEngine:
-    traced_engine = _ReviewTraceEngine(
+    lifecycle_engine = _ReviewLifecycleEngine(
         engine,
+        provider=provider,
         owner=owner,
         repo=repo,
         number=number,
         pr_title=pr_title,
+        platform=platform,
+        bot_name=bot_name,
+        visibility=visibility,
+        trace_session_id=trace_session_id,
     )
-    return cast(ReviewEngine, cast(object, traced_engine))
+    return cast(ReviewEngine, cast(object, lifecycle_engine))
 
 
 async def run_pr_merged_learning(

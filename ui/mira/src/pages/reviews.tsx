@@ -3,7 +3,9 @@ import {
   ArrowRight,
   CheckCircle2,
   CircleDot,
+  Clock3,
   ExternalLink,
+  PauseCircle,
   Search,
 } from "lucide-react"
 import { useEffect, useMemo, useState } from "react"
@@ -32,6 +34,12 @@ type StatusPresentation = {
 }
 
 const statusPresentation: Record<string, StatusPresentation> = {
+  queued: {
+    label: "Queued",
+    icon: Clock3,
+    className:
+      "border-violet-500/25 bg-violet-500/10 text-violet-800 dark:text-violet-300",
+  },
   running: {
     label: "Running",
     icon: CircleDot,
@@ -47,6 +55,12 @@ const statusPresentation: Record<string, StatusPresentation> = {
     label: "Failed",
     icon: AlertCircle,
     className: "border-destructive/25 bg-destructive/10 text-destructive",
+  },
+  interrupted: {
+    label: "Interrupted",
+    icon: PauseCircle,
+    className:
+      "border-amber-500/30 bg-amber-500/10 text-amber-800 dark:text-amber-300",
   },
 }
 
@@ -159,8 +173,12 @@ export function ReviewsPage() {
         .includes(query)
     })
   }, [search, sessions, status])
-  const active = filtered.filter((session) => session.status === "running")
-  const history = filtered.filter((session) => session.status !== "running")
+  const active = filtered.filter(
+    (session) => session.status === "queued" || session.status === "running"
+  )
+  const history = filtered.filter(
+    (session) => session.status !== "queued" && session.status !== "running"
+  )
 
   const initialLoading = loading && !sessions
 
@@ -311,6 +329,8 @@ export function ReviewsPage() {
                     <SelectItem value="all">All statuses</SelectItem>
                     <SelectItem value="completed">Complete</SelectItem>
                     <SelectItem value="failed">Failed</SelectItem>
+                    <SelectItem value="interrupted">Interrupted</SelectItem>
+                    <SelectItem value="queued">Queued</SelectItem>
                     <SelectItem value="running">Running</SelectItem>
                   </SelectContent>
                 </Select>
@@ -367,11 +387,20 @@ export function ReviewsPage() {
                           </span>
                           <span>{relativeTime(session.started_at, now)}</span>
                         </div>
-                        {session.status === "failed" && session.error && (
-                          <p className="mt-2 line-clamp-1 text-xs text-destructive">
-                            {session.error}
-                          </p>
-                        )}
+                        {(session.status === "failed" ||
+                          session.status === "interrupted") &&
+                          session.error && (
+                            <p
+                              className={cn(
+                                "mt-2 line-clamp-1 text-xs",
+                                session.status === "failed"
+                                  ? "text-destructive"
+                                  : "text-amber-800 dark:text-amber-300"
+                              )}
+                            >
+                              {session.error}
+                            </p>
+                          )}
                       </div>
                       <div>
                         <StatusBadge status={session.status} />
