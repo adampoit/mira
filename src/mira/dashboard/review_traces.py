@@ -59,10 +59,18 @@ def retry_request_is_complete(request: object) -> bool:
     typed_request = cast(Mapping[str, object], request)
     if not _RETRY_REQUEST_REQUIRED_FIELDS.issubset(typed_request):
         return False
-    for key in _RETRY_REQUEST_REQUIRED_FIELDS - {"pr_number"}:
+    for key in _RETRY_REQUEST_REQUIRED_FIELDS - {"pr_number", "auth_scope"}:
         value = typed_request.get(key)
-        if not isinstance(value, str) or not value:
+        if not isinstance(value, str):
             return False
+        if key != "pr_title" and not value:
+            return False
+    auth_scope = typed_request.get("auth_scope")
+    if not (
+        (isinstance(auth_scope, str) and bool(auth_scope))
+        or (isinstance(auth_scope, int) and not isinstance(auth_scope, bool) and auth_scope > 0)
+    ):
+        return False
     pr_number = typed_request.get("pr_number")
     return isinstance(pr_number, int) and not isinstance(pr_number, bool) and pr_number > 0
 
