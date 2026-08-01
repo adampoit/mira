@@ -336,7 +336,7 @@ async def run_pr_command(
             bot_name=bot_name,
             indexing_llm=indexing_llm,
         )
-        engine._review_only_paths = set(progress.skipped_paths)
+        cast(Any, engine)._review_only_paths = set(progress.skipped_paths)
         if not review_tracker.try_start(repo_full, number, pr_title, pr_url):
             logger.info("Review already in progress for %s, skipping", pr_url)
             return
