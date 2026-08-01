@@ -89,6 +89,7 @@ async def run_pr_review(
     platform: str = "github",
     pr_title: str = "",
     trace_session_id: str | None = None,
+    auth_scope: str | int | None = None,
 ) -> None:
     """Platform-neutral review core: review a PR/MR and post the result.
 
@@ -127,6 +128,7 @@ async def run_pr_review(
         bot_name=bot_name,
         visibility="private" if is_private else "public",
         trace_session_id=trace_session_id,
+        auth_scope=auth_scope,
     )
 
     from mira.dashboard.api import _app_db
@@ -187,6 +189,7 @@ async def run_pr_command(
     bot_name: str,
     platform: str = "github",
     pr_title: str = "",
+    auth_scope: str | int | None = None,
 ) -> None:
     """Platform-neutral handler for an @-mention command on a PR/MR.
 
@@ -243,6 +246,7 @@ async def run_pr_command(
             pr_title=pr_title,
             platform=platform,
             bot_name=bot_name,
+            auth_scope=auth_scope,
         )
         logger.info(
             "review-rest on %s by @%s — %d file(s)", pr_url, actor, len(progress.skipped_paths)
@@ -273,6 +277,7 @@ async def run_pr_command(
             pr_title=pr_title,
             platform=platform,
             bot_name=bot_name,
+            auth_scope=auth_scope,
         )
         logger.info("Re-review triggered for %s by @%s", pr_url, actor)
         try:
@@ -405,6 +410,7 @@ class _ReviewLifecycleEngine:
         bot_name: str,
         visibility: str,
         trace_session_id: str | None,
+        auth_scope: str | int | None,
     ) -> None:
         self._engine = engine
         self._provider = provider
@@ -416,6 +422,7 @@ class _ReviewLifecycleEngine:
         self._bot_name = bot_name
         self._visibility = visibility
         self._trace_session_id = trace_session_id
+        self._auth_scope = auth_scope
 
     async def review_pr(self, pr_url: str) -> ReviewResult:
         from mira.dashboard.review_traces import review_lifecycle
@@ -430,6 +437,8 @@ class _ReviewLifecycleEngine:
             "bot_name": self._bot_name,
             "visibility": self._visibility,
         }
+        if self._auth_scope is not None:
+            retry_request["auth_scope"] = self._auth_scope
         async with review_lifecycle(
             owner=self._owner,
             repo=self._repo,
@@ -487,6 +496,7 @@ def _with_review_lifecycle(
     bot_name: str,
     visibility: str = "unknown",
     trace_session_id: str | None = None,
+    auth_scope: str | int | None = None,
 ) -> ReviewEngine:
     lifecycle_engine = _ReviewLifecycleEngine(
         engine,
@@ -499,6 +509,7 @@ def _with_review_lifecycle(
         bot_name=bot_name,
         visibility=visibility,
         trace_session_id=trace_session_id,
+        auth_scope=auth_scope,
     )
     return cast(ReviewEngine, cast(object, lifecycle_engine))
 

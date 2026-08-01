@@ -36,6 +36,34 @@ _RETRY_REQUEST_FIELDS = frozenset(
         "auth_scope",
     }
 )
+_RETRY_REQUEST_REQUIRED_FIELDS = frozenset(
+    {
+        "platform",
+        "owner",
+        "repo",
+        "pr_number",
+        "pr_url",
+        "pr_title",
+        "head_sha",
+        "bot_name",
+        "visibility",
+        "auth_scope",
+    }
+)
+
+
+def retry_request_is_complete(request: object) -> bool:
+    """Return whether a persisted request has enough safe inputs to retry."""
+    if not isinstance(request, Mapping):
+        return False
+    if not _RETRY_REQUEST_REQUIRED_FIELDS.issubset(request):
+        return False
+    for key in _RETRY_REQUEST_REQUIRED_FIELDS - {"pr_number"}:
+        value = request.get(key)
+        if not isinstance(value, str) or not value:
+            return False
+    pr_number = request.get("pr_number")
+    return isinstance(pr_number, int) and not isinstance(pr_number, bool) and pr_number > 0
 
 
 def _env_float(name: str, default: float) -> float:
@@ -77,6 +105,22 @@ class ReviewTrace:
     def touch(self) -> bool:
         return self.store.touch(self.session_id, owner_id=self.instance_id)
 
+    def set_provider_check(self, platform: str, check_id: int | str) -> bool:
+        return self.store.set_provider_check(
+            self.session_id,
+            platform=platform,
+            check_id=check_id,
+            owner_id=self.instance_id,
+        )
+
+    def finish_provider_check(self, status: str, error: str = "") -> bool:
+        return self.store.update_provider_check(
+            self.session_id,
+            status=status,
+            error=error,
+            owner_id=self.instance_id,
+        )
+
 
 class TraceStore:
     path: Path
@@ -85,6 +129,7 @@ class TraceStore:
     lease_timeout: float
     _lock: threading.Lock
     _heartbeat_tasks: set[asyncio.Task[None]]
+    _recovery_tasks: set[asyncio.Task[None]]
 
     def __init__(
         self,
@@ -109,6 +154,7 @@ class TraceStore:
         self.lease_timeout = lease_timeout or _env_float("MIRA_TRACE_LEASE_SECONDS", 60.0)
         self._lock = threading.Lock()
         self._heartbeat_tasks = set()
+        self._recovery_tasks = set()
 
     def _file(self, session_id: str) -> Path:
         if not session_id or not session_id.replace("-", "").isalnum():
@@ -148,6 +194,7 @@ class TraceStore:
         retry_request: Mapping[str, object] | None = None,
         attempt: int = 1,
         retry_of: str | None = None,
+        automatic_recovery_attempts: int = 0,
     ) -> ReviewTrace:
         if status not in ACTIVE_STATUSES:
             raise ValueError(f"Invalid initial review status: {status}")
@@ -166,9 +213,11 @@ class TraceStore:
             "heartbeat_at": now,
             "last_event_at": now,
             "attempt": max(1, attempt),
+            "automatic_recovery_attempts": max(0, automatic_recovery_attempts),
             "retry_request": self._sanitize_retry_request(retry_request),
             "retry_of": retry_of,
             "replacement_id": None,
+            "provider_check": None,
             "started_at": now,
             "finished_at": None,
             "events": [],
@@ -262,6 +311,60 @@ class TraceStore:
             if not self._is_owned_active(session, owner_id):
                 return False
             session["heartbeat_at"] = time.time()
+            self._write(session)
+        return True
+
+    def set_provider_check(
+        self,
+        session_id: str,
+        *,
+        platform: str,
+        check_id: int | str,
+        owner_id: str,
+    ) -> bool:
+        with self._lock:
+            session = self._read(session_id)
+            if not self._is_owned_active(session, owner_id):
+                return False
+            session["provider_check"] = {
+                "platform": platform,
+                "check_id": check_id,
+                "status": "in_progress",
+                "started_at": time.time(),
+            }
+            self._write(session)
+        return True
+
+    def update_provider_check(
+        self,
+        session_id: str,
+        *,
+        status: str,
+        error: str = "",
+        owner_id: str | None = None,
+    ) -> bool:
+        with self._lock:
+            session = self._read(session_id)
+            if owner_id is not None and session.get("instance_id") != owner_id:
+                return False
+            check = session.get("provider_check")
+            if not isinstance(check, dict):
+                return False
+            updated = dict(check)
+            updated["status"] = status
+            updated["updated_at"] = time.time()
+            if error:
+                updated["error"] = error
+            session["provider_check"] = updated
+            self._write(session)
+        return True
+
+    def record_recovery(self, session_id: str, status: str, detail: str = "") -> bool:
+        with self._lock:
+            session = self._read(session_id)
+            session["recovery_status"] = status
+            if detail:
+                session["recovery_detail"] = detail
             self._write(session)
         return True
 
@@ -376,20 +479,28 @@ class TraceStore:
         )
 
     def reconcile_previous_instances(self) -> int:
-        return self._reconcile(
+        return len(self.interrupt_previous_instances())
+
+    def interrupt_previous_instances(self) -> list[ReviewSession]:
+        """Interrupt active sessions left by a process that no longer owns them."""
+        return self._reconcile_sessions(
             lambda session: session.get("instance_id") != self.instance_id,
             "Mira restarted before this review completed.",
         )
 
     def reconcile_stale(self) -> int:
         now = time.time()
-        return self._reconcile(
-            lambda session: not self.is_live(session, now=now),
-            "The review heartbeat lease expired before completion.",
+        return len(
+            self._reconcile_sessions(
+                lambda session: not self.is_live(session, now=now),
+                "The review heartbeat lease expired before completion.",
+            )
         )
 
-    def _reconcile(self, should_interrupt: Callable[[ReviewSession], bool], detail: str) -> int:
-        recovered = 0
+    def _reconcile_sessions(
+        self, should_interrupt: Callable[[ReviewSession], bool], detail: str
+    ) -> list[ReviewSession]:
+        recovered: list[ReviewSession] = []
         if not self.path.exists():
             return recovered
         with self._lock:
@@ -405,9 +516,10 @@ class TraceStore:
                     session["status"] = "interrupted"
                     session["finished_at"] = now
                     session["heartbeat_at"] = now
+                    session["last_event_at"] = now
                     session["error"] = detail
                     session["recovery_reason"] = detail
-                    recovered += 1
+                    recovered.append(dict(session))
                 self._write(session)
         return recovered
 
@@ -417,6 +529,17 @@ class TraceStore:
 
     async def stop_heartbeats(self) -> None:
         tasks = list(self._heartbeat_tasks)
+        for task in tasks:
+            _ = task.cancel()
+        if tasks:
+            _ = await asyncio.gather(*tasks, return_exceptions=True)
+
+    def register_recovery_task(self, task: asyncio.Task[None]) -> None:
+        self._recovery_tasks.add(task)
+        task.add_done_callback(self._recovery_tasks.discard)
+
+    async def stop_recovery_tasks(self) -> None:
+        tasks = list(self._recovery_tasks)
         for task in tasks:
             _ = task.cancel()
         if tasks:
@@ -463,9 +586,13 @@ class TraceStore:
         _ = normalized.setdefault("heartbeat_at", last_event_at)
         _ = normalized.setdefault("last_event_at", last_event_at)
         _ = normalized.setdefault("attempt", 1)
+        _ = normalized.setdefault("automatic_recovery_attempts", 0)
         _ = normalized.setdefault("retry_request", None)
         _ = normalized.setdefault("retry_of", None)
         _ = normalized.setdefault("replacement_id", None)
+        _ = normalized.setdefault("provider_check", None)
+        _ = normalized.setdefault("recovery_status", None)
+        _ = normalized.setdefault("recovery_detail", None)
         _ = normalized.setdefault("finished_at", None)
         return normalized
 
