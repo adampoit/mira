@@ -123,6 +123,7 @@ async def run_pr_review(
         repo=repo,
         number=number,
         pr_title=pr_title,
+        pr_url=pr_url,
         platform=platform,
         bot_name=bot_name,
         visibility="private" if is_private else "public",
@@ -240,6 +241,7 @@ async def run_pr_command(
             repo=repo,
             number=number,
             pr_title=pr_title,
+            pr_url=pr_url,
             platform=platform,
             bot_name=bot_name,
             auth_scope=auth_scope,
@@ -271,6 +273,7 @@ async def run_pr_command(
             repo=repo,
             number=number,
             pr_title=pr_title,
+            pr_url=pr_url,
             platform=platform,
             bot_name=bot_name,
             auth_scope=auth_scope,
@@ -402,6 +405,7 @@ class _ReviewLifecycleEngine:
         repo: str,
         number: int,
         pr_title: str,
+        pr_url: str,
         platform: str,
         bot_name: str,
         visibility: str,
@@ -414,11 +418,37 @@ class _ReviewLifecycleEngine:
         self._repo = repo
         self._number = number
         self._pr_title = pr_title
+        self._pr_url = pr_url
         self._platform = platform
         self._bot_name = bot_name
         self._visibility = visibility
         self._trace_session_id = trace_session_id
         self._auth_scope = auth_scope
+        if self._trace_session_id is None:
+            from mira.dashboard.review_traces import store
+
+            retry_request: dict[str, object] = {
+                "platform": self._platform,
+                "owner": self._owner,
+                "repo": self._repo,
+                "pr_number": self._number,
+                "pr_url": self._pr_url,
+                "pr_title": self._pr_title,
+                "bot_name": self._bot_name,
+                "visibility": self._visibility,
+            }
+            if self._auth_scope is not None:
+                retry_request["auth_scope"] = self._auth_scope
+            trace = store.start_details(
+                owner=self._owner,
+                repo=self._repo,
+                pr_number=self._number,
+                pr_title=self._pr_title,
+                pr_url=self._pr_url,
+                status="running",
+                retry_request=retry_request,
+            )
+            self._trace_session_id = trace.session_id
 
     async def review_pr(self, pr_url: str) -> ReviewResult:
         from mira.dashboard.review_traces import review_lifecycle
@@ -488,6 +518,7 @@ def _with_review_lifecycle(
     repo: str,
     number: int,
     pr_title: str,
+    pr_url: str,
     platform: str,
     bot_name: str,
     visibility: str = "unknown",
@@ -501,6 +532,7 @@ def _with_review_lifecycle(
         repo=repo,
         number=number,
         pr_title=pr_title,
+        pr_url=pr_url,
         platform=platform,
         bot_name=bot_name,
         visibility=visibility,
