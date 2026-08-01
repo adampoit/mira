@@ -69,11 +69,13 @@ type AgentGroup = {
   findings: number
 }
 type TraceView = "agents" | "milestones" | "all"
+type EventPresentation = {
+  icon: typeof Brain
+  className: string
+  label: string
+}
 
-const eventPresentation: Record<
-  string,
-  { icon: typeof Brain; className: string; label: string }
-> = {
+const eventPresentation: Record<string, EventPresentation> = {
   context: {
     icon: FileCode2,
     className: "bg-sky-500/10 text-sky-700 dark:text-sky-400",
@@ -116,6 +118,13 @@ const agentDescriptions: Record<string, string> = {
   review: "Checks correctness, regressions, and maintainability.",
   "security review": "Looks for security and trust-boundary issues.",
   "quality critique": "Challenges candidate findings before publication.",
+}
+
+function getEventPresentation(kind: unknown): EventPresentation {
+  if (typeof kind === "string" && Object.hasOwn(eventPresentation, kind)) {
+    return eventPresentation[kind]
+  }
+  return eventPresentation.action
 }
 
 function titleCase(value: string) {
@@ -182,7 +191,7 @@ function EventRow({
   isLast: boolean
   showAgent?: boolean
 }) {
-  const presentation = eventPresentation[event.kind] || eventPresentation.action
+  const presentation = getEventPresentation(event.kind)
   const Icon = presentation.icon
   const pass = typeof event.data.pass === "string" ? event.data.pass : ""
   const agentId =
