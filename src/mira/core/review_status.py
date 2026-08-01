@@ -13,7 +13,7 @@ class ReviewStatus:
     pr_number: int
     pr_title: str
     pr_url: str
-    status: str  # "reviewing", "completed", "failed"
+    status: str  # "reviewing", "completed", "failed", "interrupted"
     started_at: float = 0.0
     finished_at: float = 0.0
     error: str = ""
@@ -26,10 +26,10 @@ class ReviewTracker:
     since they are already persisted in the per-repo review events DB.
     """
 
-    _TTL_SECONDS = 3600  # 1 hour
+    _TTL_SECONDS: int = 3600  # 1 hour
 
     def __init__(self) -> None:
-        self._lock = threading.Lock()
+        self._lock: threading.Lock = threading.Lock()
         self._jobs: dict[str, ReviewStatus] = {}
 
     def _key(self, repo: str, pr_number: int) -> str:
@@ -74,11 +74,17 @@ class ReviewTracker:
                 job.finished_at = time.time()
 
     def fail(self, repo: str, pr_number: int, error: str = "") -> None:
+        self._finish(repo, pr_number, "failed", error)
+
+    def interrupt(self, repo: str, pr_number: int, error: str = "") -> None:
+        self._finish(repo, pr_number, "interrupted", error)
+
+    def _finish(self, repo: str, pr_number: int, status: str, error: str) -> None:
         with self._lock:
             key = self._key(repo, pr_number)
             job = self._jobs.get(key)
             if job:
-                job.status = "failed"
+                job.status = status
                 job.error = error
                 job.finished_at = time.time()
 

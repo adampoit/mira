@@ -174,9 +174,16 @@ export interface ActivityEventModel extends ReviewEventModel {
   author_avatar_url: string
 }
 
+export type ReviewTraceStatus =
+  | "queued"
+  | "running"
+  | "completed"
+  | "failed"
+  | "interrupted"
+
 export interface ReviewTraceSummary {
   id: string
-  status: "running" | "completed" | "failed"
+  status: ReviewTraceStatus
   owner: string
   repo: string
   pr_number: number
@@ -191,6 +198,10 @@ export interface ReviewTraceSummary {
   agent_count: number
   completed_agents: number
   event_count: number
+  attempt: number
+  retry_of: string | null
+  replacement_id: string | null
+  recovery_reason?: string
   error?: string
 }
 

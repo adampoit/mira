@@ -60,6 +60,11 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        from mira.dashboard.review_traces import store as review_trace_store
+
+        recovered_sessions = review_trace_store.reconcile_previous_instances()
+        logger.info("Recovered %d interrupted review session(s)", recovered_sessions)
+
         # Backfill is a GitHub-installation concept; skip it on GitLab-only.
         backfill_task = (
             asyncio.create_task(backfill_missing_indexes(app_auth))
@@ -114,13 +119,16 @@ def create_app(
             )
         )
 
-        yield
-        if backfill_task is not None and not backfill_task.done():
-            backfill_task.cancel()
-        if fj_task is not None and not fj_task.done():
-            fj_task.cancel()
-        if not vuln_task.done():
-            vuln_task.cancel()
+        try:
+            yield
+        finally:
+            if backfill_task is not None and not backfill_task.done():
+                backfill_task.cancel()
+            if fj_task is not None and not fj_task.done():
+                fj_task.cancel()
+            if not vuln_task.done():
+                vuln_task.cancel()
+            await review_trace_store.stop_heartbeats()
 
     app = FastAPI(title="Mira", lifespan=lifespan)
 
