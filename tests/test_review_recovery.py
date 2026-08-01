@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from mira.dashboard import runtime, review_recovery
+from mira.dashboard import review_recovery, runtime
 from mira.dashboard.review_recovery import RecoveryPolicy
 from mira.dashboard.review_traces import TraceStore
 from mira.models import PRInfo
