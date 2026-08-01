@@ -1,3 +1,5 @@
+# pyright: reportAny=false, reportExplicitAny=false, reportUnknownParameterType=false, reportUnknownVariableType=false, reportUnknownMemberType=false, reportUnknownArgumentType=false, reportPrivateUsage=false, reportUnusedCallResult=false
+# Provider and authentication adapters are intentionally duck-typed here.
 """Restart recovery for interrupted review attempts."""
 
 from __future__ import annotations
@@ -22,6 +24,7 @@ from mira.providers import create_provider
 logger = logging.getLogger(__name__)
 
 ProviderFactory = Callable[[str, str], Any]
+ReviewRunner = Callable[..., Awaitable[None]]
 Sleep = Callable[[float], Awaitable[None]]
 
 
@@ -198,6 +201,7 @@ async def _recover_session(
     policy: RecoveryPolicy,
     review_store: TraceStore,
     provider_factory: ProviderFactory,
+    review_runner: ReviewRunner | None,
     sleep: Sleep,
 ) -> None:
     session_id = session.get("id")
@@ -234,9 +238,12 @@ async def _recover_session(
         else:
             raise RuntimeError("Provider returned invalid pull request metadata")
 
-        from mira.platforms.handlers import run_pr_review
+        if review_runner is None:
+            from mira.platforms.handlers import run_pr_review
 
-        await run_pr_review(
+            review_runner = run_pr_review
+
+        await review_runner(
             provider=provider,
             owner=pr_info.owner,
             repo=pr_info.repo,
@@ -247,7 +254,7 @@ async def _recover_session(
             platform=_request_string(request, "platform"),
             pr_title=pr_info.title,
             trace_session_id=replacement.session_id,
-            auth_scope=request.get("auth_scope"),
+            auth_scope=_scope_for_token(request, _request_string(request, "platform")),
         )
         if review_store.get(replacement.session_id).get("status") == "queued":
             _ = review_store.finish(
@@ -281,6 +288,7 @@ async def recover_previous_reviews(
     policy: RecoveryPolicy | None = None,
     review_store: TraceStore | None = None,
     provider_factory: ProviderFactory = create_provider,
+    review_runner: ReviewRunner | None = None,
     sleep: Sleep = asyncio.sleep,
 ) -> int:
     """Reconcile old sessions and schedule bounded automatic replacements."""
@@ -324,6 +332,7 @@ async def recover_previous_reviews(
                 policy=effective_policy,
                 review_store=active_store,
                 provider_factory=provider_factory,
+                review_runner=review_runner,
                 sleep=sleep,
             )
         )
