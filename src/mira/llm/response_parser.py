@@ -6,7 +6,7 @@ import json
 import logging
 import re
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from mira.core.context import extract_hunk_lines
 from mira.exceptions import ResponseParseError
@@ -317,8 +317,6 @@ def _try_load_json(text: str) -> object | None:
         return None
 
 
-_WALKTHROUGH_OBJECT_FIELDS = ("effort", "confidence_score")
-
 _ARG_KEY_VALUE_RE = re.compile(
     r"<arg_key>\s*([^<]+?)\s*</arg_key>\s*<arg_value>\s*(.*?)\s*</arg_value>",
     re.S,
@@ -424,14 +422,24 @@ def parse_walkthrough_response(raw_text: str) -> LLMWalkthroughResponse:
     # instead of objects (``"effort": "level</arg_key><arg_value>2"``). Rebuild
     # what we can; drop the field otherwise — both are optional with defaults,
     # so one bad field shouldn't skip the whole walkthrough (issue #162).
-    for key in _WALKTHROUGH_OBJECT_FIELDS:
+    _WALKTHROUGH_FIELD_MODELS = {
+        "effort": LLMWalkthroughEffort,
+        "confidence_score": LLMWalkthroughConfidenceScore,
+    }
+    for key, model in _WALKTHROUGH_FIELD_MODELS.items():
         value = data.get(key)
         if isinstance(value, dict):
             continue
         rebuilt = _salvage_arg_xml_fragment(value) if isinstance(value, str) else None
         if rebuilt is not None:
+            try:
+                model.model_validate(rebuilt)
+            except ValidationError as exc:
+                logger.warning("Dropping malformed walkthrough %s field: %s", key, exc)
+                data.pop(key, None)
+                continue
             data[key] = rebuilt
-        elif key in data:
+        elif value is not None:
             logger.warning("Dropping malformed walkthrough %s field: %r", key, value)
             data.pop(key)
 

@@ -275,6 +275,32 @@ class TestParseWalkthroughResponse:
         assert len(result.change_groups) == 1
         assert result.change_groups[0].label == "Core"
 
+    def test_salvage_failure_defaults_effort(self):
+        """Leaked XML fragment that fails sub-model validation → effort drops to None (P3)."""
+        raw = json.dumps(
+            {
+                "summary": "Changes",
+                "change_groups": [],
+                "effort": ("level</arg_key><arg_value>high"),
+            }
+        )
+        result = parse_walkthrough_response(raw)
+        assert result.summary == "Changes"
+        assert result.effort is None
+
+    def test_salvage_failure_defaults_confidence_score(self):
+        """Leaked XML fragment that fails sub-model validation → confidence_score drops to None (P3)."""
+        raw = json.dumps(
+            {
+                "summary": "Changes",
+                "change_groups": [],
+                "confidence_score": ("score</arg_key><arg_value>uncertain"),
+            }
+        )
+        result = parse_walkthrough_response(raw)
+        assert result.summary == "Changes"
+        assert result.confidence_score is None
+
 
 class TestConvertToWalkthroughResult:
     def test_basic_conversion(self, sample_walkthrough_response_text: str):
