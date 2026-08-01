@@ -7,7 +7,7 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from jinja2 import Environment, FileSystemLoader
 
@@ -461,10 +461,13 @@ def _install_review_queue() -> None:
     from mira.core.review_queue import queue_pr_commands, queue_pr_reviews
 
     global run_pr_command, run_pr_review
-    run_pr_review = queue_pr_reviews(run_pr_review)
-    run_pr_command = queue_pr_commands(
-        run_pr_command,
-        _REVIEW_KEYWORDS | _REVIEW_REST_KEYWORDS,
+    run_pr_review = cast(Any, queue_pr_reviews(run_pr_review))
+    run_pr_command = cast(
+        Any,
+        queue_pr_commands(
+            run_pr_command,
+            _REVIEW_KEYWORDS | _REVIEW_REST_KEYWORDS,
+        ),
     )
 
 
