@@ -6,7 +6,7 @@ on:
     types: [completed]
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   promote:
@@ -15,16 +15,22 @@ jobs:
       github.event.workflow_run.head_branch == 'sync/integration'
     runs-on: ubuntu-latest
     steps:
+      - id: not-adam
+        uses: adampoit/not-adam@v1
+        with:
+          private-key: ${{ secrets.NOT_ADAM_APP_PRIVATE_KEY }}
+
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ steps.not-adam.outputs.token }}
 
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
 
       - name: Run patchlane promote
-        run: npx patchlane@0.4.0 promote
+        run: npx patchlane@0.5.2 promote
         env:
+          GH_TOKEN: ${{ steps.not-adam.outputs.token }}
           EXPECTED_SYNC_SHA: ${{ github.event.workflow_run.head_sha }}

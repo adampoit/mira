@@ -12,3 +12,9 @@ patchRefs:
   - patch/sync
   - patch/ci
 ciWorkflow: Fork CI
+allowedWorkflows:
+  - benchmark.yml
+  - ci.yml
+  - evals.yml
+  - release-beta.yml
+  - release.yml

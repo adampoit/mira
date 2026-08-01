@@ -22,7 +22,7 @@ on:
         default: ""
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   fork-sync:
@@ -43,7 +43,7 @@ jobs:
           node-version: "22"
 
       - name: Run patchlane sync
-        run: npx patchlane@0.4.0 sync
+        run: npx patchlane@0.5.2 sync
         env:
           GH_TOKEN: ${{ steps.not-adam.outputs.token }}
           UPSTREAM_SOURCE: ${{ inputs.source }}
