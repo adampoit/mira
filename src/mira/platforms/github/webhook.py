@@ -613,6 +613,7 @@ async def handle_pull_request(
             is_private,
             bot_name,
             pr_title=pr.get("title", ""),
+            auth_scope=f"installation:{installation_id}",
         )
     except Exception as exc:
         logger.exception("Error handling pull_request event")
@@ -656,6 +657,7 @@ async def handle_comment(
             comment_user,
             bot_name,
             pr_title=payload["issue"].get("title", ""),
+            auth_scope=f"installation:{installation_id}",
         )
     except Exception:
         logger.exception("Error handling comment event")
