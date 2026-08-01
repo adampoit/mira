@@ -322,6 +322,15 @@ _ARG_KEY_VALUE_RE = re.compile(
     re.S,
 )
 
+# Nested object fields occasionally arrive as leaked tool-arg XML fragments
+# instead of objects (``"effort": "level</arg_key><arg_value>2"``). Rebuild
+# what we can; drop the field otherwise — both are optional with defaults,
+# so one bad field shouldn't skip the whole walkthrough (issue #162).
+_WALKTHROUGH_FIELD_MODELS = {
+    "effort": LLMWalkthroughEffort,
+    "confidence_score": LLMWalkthroughConfidenceScore,
+}
+
 
 def _coerce_xml_value(raw: str) -> object:
     """Coerce an XML-argument value string to a JSON-ish scalar."""
@@ -418,22 +427,31 @@ def parse_walkthrough_response(raw_text: str) -> LLMWalkthroughResponse:
 
     data = _unstring_nested_json(data)
 
-    # Nested object fields occasionally arrive as leaked tool-arg XML fragments
-    # instead of objects (``"effort": "level</arg_key><arg_value>2"``). Rebuild
-    # what we can; drop the field otherwise — both are optional with defaults,
-    # so one bad field shouldn't skip the whole walkthrough (issue #162).
-    _WALKTHROUGH_FIELD_MODELS = {
-        "effort": LLMWalkthroughEffort,
-        "confidence_score": LLMWalkthroughConfidenceScore,
-    }
+    # Rebuild any fields that arrived as leaked XML fragments (issue #162)
     for key, model in _WALKTHROUGH_FIELD_MODELS.items():
         value = data.get(key)
         if isinstance(value, dict):
+            try:
+                if hasattr(model, "model_validate"):
+                    model.model_validate(value)
+                elif hasattr(model, "parse_obj"):
+                    model.parse_obj(value)
+                else:
+                    model(**value)
+            except ValidationError as exc:
+                logger.warning("Dropping malformed walkthrough %s field: %s", key, exc)
+                data.pop(key, None)
             continue
+
         rebuilt = _salvage_arg_xml_fragment(value) if isinstance(value, str) else None
         if rebuilt is not None:
             try:
-                model.model_validate(rebuilt)
+                if hasattr(model, "model_validate"):
+                    model.model_validate(rebuilt)
+                elif hasattr(model, "parse_obj"):
+                    model.parse_obj(rebuilt)
+                else:
+                    model(**rebuilt)
             except ValidationError as exc:
                 logger.warning("Dropping malformed walkthrough %s field: %s", key, exc)
                 data.pop(key, None)

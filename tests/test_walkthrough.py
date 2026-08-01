@@ -301,6 +301,19 @@ class TestParseWalkthroughResponse:
         assert result.summary == "Changes"
         assert result.confidence_score is None
 
+    def test_malformed_dict_field_dropped(self):
+        """Dict-form effort with invalid value fails LLMWalkthroughEffort validation → dropped to None."""
+        raw = json.dumps(
+            {
+                "summary": "Changes",
+                "change_groups": [],
+                "effort": {"level": 3, "label": "Moderate", "minutes": "not_an_int"},
+            }
+        )
+        result = parse_walkthrough_response(raw)
+        assert result.summary == "Changes"
+        assert result.effort is None
+
 
 class TestConvertToWalkthroughResult:
     def test_basic_conversion(self, sample_walkthrough_response_text: str):
