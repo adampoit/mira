@@ -6,7 +6,7 @@ on:
     types: [completed]
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   promote:
@@ -15,18 +15,25 @@ jobs:
       github.event.workflow_run.head_branch == 'sync/integration'
     runs-on: ubuntu-latest
     steps:
+      - name: Create Patchlane token
+        id: patchlane-token
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.PATCHLANE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.PATCHLANE_APP_PRIVATE_KEY }}
+          permission-contents: write
+          permission-workflows: write
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ steps.patchlane-token.outputs.token }}
 
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
 
       - name: Run patchlane promote
-        run: npx patchlane@0.4.0 promote
+        run: npx patchlane@0.5.2 promote
         env:
-          BASE_BRANCH: main
-          SYNC_BRANCH: sync/integration
+          GH_TOKEN: ${{ steps.patchlane-token.outputs.token }}
           EXPECTED_SYNC_SHA: ${{ github.event.workflow_run.head_sha }}
