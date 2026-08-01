@@ -74,11 +74,26 @@ function titleCase(value: string) {
   return value.replace(/(^|\s)\S/g, (letter) => letter.toUpperCase())
 }
 
-function statusLabel(status: unknown) {
-  if (typeof status !== "string" || !status.trim()) {
-    return fallbackStatusPresentation.label
+// Trace and legacy in-memory tracker responses use different active labels.
+function normalizeStatus(status: unknown) {
+  if (typeof status !== "string") return ""
+  const normalized = status.trim().toLowerCase()
+  if (
+    normalized === "reviewing" ||
+    normalized === "active" ||
+    normalized === "in_progress" ||
+    normalized === "in-progress" ||
+    normalized === "in progress"
+  ) {
+    return "running"
   }
-  return titleCase(status.trim().replace(/[-_]+/g, " "))
+  return normalized
+}
+
+function statusLabel(status: unknown) {
+  const normalized = normalizeStatus(status)
+  if (!normalized) return fallbackStatusPresentation.label
+  return titleCase(normalized.replace(/[-_]+/g, " "))
 }
 
 function relativeTime(timestamp: number, now: number) {
@@ -99,12 +114,27 @@ function duration(session: ReviewTraceSummary, now: number) {
   return `${Math.floor(minutes / 60)}h ${minutes % 60}m`
 }
 
+function getStatusPresentation(status: unknown): StatusPresentation {
+  const key = normalizeStatus(status)
+  const presentation =
+    key && Object.hasOwn(statusPresentation, key)
+      ? statusPresentation[key]
+      : undefined
+  return (
+    presentation ?? {
+      ...fallbackStatusPresentation,
+      label: statusLabel(status),
+    }
+  )
+}
+
+function isActiveStatus(status: unknown) {
+  const normalized = normalizeStatus(status)
+  return normalized === "queued" || normalized === "running"
+}
+
 function StatusBadge({ status }: { status: ReviewTraceSummary["status"] }) {
-  const normalizedStatus = typeof status === "string" ? status : ""
-  const presentation = statusPresentation[normalizedStatus] ?? {
-    ...fallbackStatusPresentation,
-    label: statusLabel(status),
-  }
+  const presentation = getStatusPresentation(status)
   const Icon = presentation.icon
   return (
     <Badge className={cn("gap-1.5", presentation.className)}>
@@ -166,19 +196,17 @@ export function ReviewsPage() {
   const filtered = useMemo(() => {
     const query = search.trim().toLowerCase()
     return (sessions || []).filter((session) => {
-      if (status !== "all" && session.status !== status) return false
+      if (status !== "all" && normalizeStatus(session.status) !== status) {
+        return false
+      }
       if (!query) return true
       return `${session.owner}/${session.repo} #${session.pr_number} ${session.pr_title}`
         .toLowerCase()
         .includes(query)
     })
   }, [search, sessions, status])
-  const active = filtered.filter(
-    (session) => session.status === "queued" || session.status === "running"
-  )
-  const history = filtered.filter(
-    (session) => session.status !== "queued" && session.status !== "running"
-  )
+  const active = filtered.filter((session) => isActiveStatus(session.status))
+  const history = filtered.filter((session) => !isActiveStatus(session.status))
 
   const initialLoading = loading && !sessions
 
