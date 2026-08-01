@@ -86,32 +86,51 @@ def _review_trace_store_for_engine(engine: Any) -> tuple[Any, str] | None:
     return store, session_id
 
 
-async def _run_review_with_check(provider: Any, engine: ReviewEngine, pr_url: str) -> Any:
+def _finish_review_trace(
+    trace_context: tuple[Any, str] | None,
+    status: str,
+    detail: str,
+) -> None:
+    if trace_context is None:
+        return
+    trace_store, session_id = trace_context
+    _ = trace_store.finish(session_id, status, detail, owner_id=trace_store.instance_id)
+
+
+async def _run_review_with_check(provider: Any, engine: Any, pr_url: str) -> Any:
     """Run a review while reporting progress when the provider supports checks."""
-    pr_info = await provider.get_pr_info(pr_url)
+    trace_context = _review_trace_store_for_engine(engine)
+    pr_info: Any = None
     create_check = getattr(provider, "create_review_check", None)
     complete_check = getattr(provider, "complete_review_check", None)
     check_id: int | None = None
-    trace_context = _review_trace_store_for_engine(engine)
-
-    if create_check is not None:
-        try:
-            check_id = await create_check(pr_info)
-            if check_id is not None and trace_context is not None:
-                trace_store, session_id = trace_context
-                _ = trace_store.set_provider_check(
-                    session_id,
-                    platform=str(getattr(engine, "_platform", "github")),
-                    check_id=check_id,
-                    owner_id=trace_store.instance_id,
-                )
-        except Exception as exc:
-            logger.warning("Failed to create review check for %s: %s", pr_url, exc)
 
     try:
+        pr_info = await provider.get_pr_info(pr_url)
+        if create_check is not None:
+            try:
+                check_id = await create_check(pr_info)
+                if check_id is not None and trace_context is not None:
+                    trace_store, session_id = trace_context
+                    _ = trace_store.set_provider_check(
+                        session_id,
+                        platform=str(getattr(engine, "_platform", "github")),
+                        check_id=check_id,
+                        owner_id=trace_store.instance_id,
+                    )
+            except asyncio.CancelledError:
+                _finish_review_trace(
+                    trace_context,
+                    "interrupted",
+                    "Review cancelled before completion.",
+                )
+                raise
+            except Exception as exc:
+                logger.warning("Failed to create review check for %s: %s", pr_url, exc)
+
         result = await engine.review_pr(pr_url)
     except asyncio.CancelledError:
-        if check_id is not None and complete_check is not None:
+        if check_id is not None and complete_check is not None and pr_info is not None:
             try:
                 await complete_check(
                     pr_info,
@@ -124,9 +143,10 @@ async def _run_review_with_check(provider: Any, engine: ReviewEngine, pr_url: st
         if trace_context is not None and check_id is not None:
             trace_store, session_id = trace_context
             _ = trace_store.update_provider_check(session_id, status="interrupted")
+        _finish_review_trace(trace_context, "interrupted", "Review cancelled before completion.")
         raise
     except Exception as exc:
-        if check_id is not None and complete_check is not None:
+        if check_id is not None and complete_check is not None and pr_info is not None:
             try:
                 await complete_check(
                     pr_info,
@@ -143,6 +163,7 @@ async def _run_review_with_check(provider: Any, engine: ReviewEngine, pr_url: st
                 status="failed",
                 error=str(exc) or type(exc).__name__,
             )
+        _finish_review_trace(trace_context, "failed", str(exc) or type(exc).__name__)
         raise
 
     if check_id is not None and complete_check is not None:
@@ -158,6 +179,11 @@ async def _run_review_with_check(provider: Any, engine: ReviewEngine, pr_url: st
             if trace_context is not None:
                 trace_store, session_id = trace_context
                 _ = trace_store.update_provider_check(session_id, status="completed")
+        except asyncio.CancelledError:
+            _finish_review_trace(
+                trace_context, "interrupted", "Review cancelled before completion."
+            )
+            raise
         except Exception as exc:
             logger.warning("Failed to complete review check for %s: %s", pr_url, exc)
     return result
