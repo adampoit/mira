@@ -9,6 +9,7 @@ import {
   ExternalLink,
   FileCode2,
   LoaderCircle,
+  PauseCircle,
   RefreshCw,
   SearchCode,
   ShieldCheck,
@@ -41,7 +42,7 @@ type TraceEvent = {
 }
 type ReviewSession = {
   id: string
-  status: "running" | "completed" | "failed"
+  status: "queued" | "running" | "completed" | "failed" | "interrupted"
   owner: string
   repo: string
   pr_number: number
@@ -51,6 +52,10 @@ type ReviewSession = {
   started_at: number
   finished_at: number | null
   events: TraceEvent[]
+  attempt: number
+  retry_of: string | null
+  replacement_id: string | null
+  recovery_reason?: string
   error?: string
 }
 type AgentGroup = {
@@ -689,9 +694,12 @@ export function ReviewSessionPage() {
     setRetriggering(true)
     setRetriggerError("")
     try {
-      await postJson(`/api/reviews/${sessionId}/retrigger`, {})
+      const response = await postJson<{ replacement_session_id: string }>(
+        `/api/reviews/${sessionId}/retrigger`,
+        {}
+      )
       setConfirmRetrigger(false)
-      navigate("/reviews")
+      navigate(`/reviews/${response.replacement_session_id}`)
     } catch (requestError) {
       setRetriggerError(
         requestError instanceof Error
@@ -722,6 +730,8 @@ export function ReviewSessionPage() {
     )
 
   const running = session.status === "running"
+  const active = running || session.status === "queued"
+  const interrupted = session.status === "interrupted"
   return (
     <main className="mx-auto w-full max-w-6xl px-4 py-6 sm:px-6 lg:py-9">
       <header className="pb-6">
@@ -743,26 +753,36 @@ export function ReviewSessionPage() {
                   "gap-1.5",
                   running
                     ? "bg-sky-500/10 text-sky-700 dark:text-sky-400"
-                    : session.status === "completed"
-                      ? "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400"
-                      : "bg-destructive/10 text-destructive"
+                    : session.status === "queued"
+                      ? "bg-violet-500/10 text-violet-700 dark:text-violet-300"
+                      : session.status === "completed"
+                        ? "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400"
+                        : interrupted
+                          ? "bg-amber-500/10 text-amber-800 dark:text-amber-300"
+                          : "bg-destructive/10 text-destructive"
                 )}
                 variant="secondary"
               >
-                {running ? (
+                {running || session.status === "queued" ? (
                   <LoaderCircle className="size-3.5 animate-spin motion-reduce:animate-none" />
                 ) : session.status === "completed" ? (
                   <Check className="size-3.5" />
+                ) : interrupted ? (
+                  <PauseCircle className="size-3.5" />
                 ) : (
                   <AlertCircle className="size-3.5" />
                 )}
                 {running
                   ? "Reviewing"
-                  : session.status === "completed"
-                    ? "Complete"
-                    : "Failed"}
+                  : session.status === "queued"
+                    ? "Queued"
+                    : session.status === "completed"
+                      ? "Complete"
+                      : interrupted
+                        ? "Interrupted"
+                        : "Failed"}
               </Badge>
-              {running && (
+              {active && (
                 <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
                   <CircleDot
                     className={cn("size-3", connected && "text-emerald-600")}
@@ -776,10 +796,10 @@ export function ReviewSessionPage() {
             <Button
               variant="outline"
               onClick={() => setConfirmRetrigger(true)}
-              disabled={running}
+              disabled={active}
             >
               <RefreshCw className="size-4" />
-              {running ? "Review running" : "Run review again"}
+              {active ? "Review active" : "Run review again"}
             </Button>
             <Button asChild variant="outline">
               <a href={session.pr_url} target="_blank" rel="noreferrer">
@@ -794,6 +814,47 @@ export function ReviewSessionPage() {
           </p>
         )}
       </header>
+
+      {interrupted && (
+        <section
+          className="mb-6 flex flex-col gap-3 rounded-lg border border-amber-500/25 bg-amber-500/10 p-4 text-sm sm:flex-row sm:items-center sm:justify-between"
+          aria-labelledby="interruption-title"
+        >
+          <div>
+            <h2 id="interruption-title" className="font-medium text-amber-900 dark:text-amber-200">
+              This review did not finish
+            </h2>
+            <p className="mt-1 max-w-3xl text-amber-900/80 dark:text-amber-200/80">
+              {session.recovery_reason || session.error ||
+                "The review process was interrupted before it could publish a final result."}
+            </p>
+            {session.finished_at && (
+              <p className="mt-1 text-xs text-amber-900/70 dark:text-amber-200/70">
+                Interrupted {new Date(session.finished_at * 1000).toLocaleString()}
+              </p>
+            )}
+          </div>
+          <Button variant="outline" onClick={() => setConfirmRetrigger(true)}>
+            <RefreshCw className="size-4" />
+            Retry review
+          </Button>
+        </section>
+      )}
+
+      {(session.retry_of || session.replacement_id) && (
+        <nav className="mb-6 flex flex-wrap gap-x-4 gap-y-2 text-sm" aria-label="Related review runs">
+          {session.retry_of && (
+            <Button variant="link" className="h-auto p-0" onClick={() => navigate(`/reviews/${session.retry_of}`)}>
+              View previous attempt
+            </Button>
+          )}
+          {session.replacement_id && (
+            <Button variant="link" className="h-auto p-0" onClick={() => navigate(`/reviews/${session.replacement_id}`)}>
+              View replacement attempt
+            </Button>
+          )}
+        </nav>
+      )}
 
       <PhaseOverview session={session} agents={agents} />
 
