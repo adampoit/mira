@@ -5,13 +5,11 @@ from __future__ import annotations
 import asyncio
 import inspect
 import logging
-from collections.abc import AsyncGenerator, Callable, Collection, Coroutine
+from collections.abc import AsyncGenerator, Awaitable, Callable, Collection
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from functools import wraps
-from typing import Any, ParamSpec, TypeVar
-
-from mira.core.review_status import tracker as review_tracker
+from typing import ParamSpec, TypeVar, cast
 
 logger = logging.getLogger(__name__)
 
@@ -58,55 +56,52 @@ async def _pr_review_slot(
 
 
 def _review_identity(
-    signature: inspect.Signature, args: tuple[Any, ...], kwargs: dict[str, Any]
+    signature: inspect.Signature, args: tuple[object, ...], kwargs: dict[str, object]
 ) -> tuple[inspect.BoundArguments, str, str, str, int]:
     request = signature.bind(*args, **kwargs)
     request.apply_defaults()
+    arguments = cast(dict[str, object], request.arguments)
+    number = arguments["number"]
+    if not isinstance(number, int):
+        raise TypeError("Review number must be an integer")
     return (
         request,
-        str(request.arguments["platform"]),
-        str(request.arguments["owner"]),
-        str(request.arguments["repo"]),
-        int(request.arguments["number"]),
+        str(arguments["platform"]),
+        str(arguments["owner"]),
+        str(arguments["repo"]),
+        number,
     )
 
 
 def queue_pr_reviews(
-    func: Callable[P, Coroutine[Any, Any, R]],
-) -> Callable[P, Coroutine[Any, Any, R]]:
+    func: Callable[P, Awaitable[R]],
+) -> Callable[P, Awaitable[R]]:
     signature = inspect.signature(func)
 
     @wraps(func)
     async def queued(*args: P.args, **kwargs: P.kwargs) -> R:
         _, platform, owner, repo, number = _review_identity(signature, args, kwargs)
         async with _pr_review_slot(platform, owner, repo, number):
-            try:
-                return await func(*args, **kwargs)
-            except asyncio.CancelledError:
-                review_tracker.fail(f"{owner}/{repo}", number, "Review cancelled")
-                raise
+            return await func(*args, **kwargs)
 
     return queued
 
 
 def queue_pr_commands(
-    func: Callable[P, Coroutine[Any, Any, R]], review_commands: Collection[str]
-) -> Callable[P, Coroutine[Any, Any, R]]:
+    func: Callable[P, Awaitable[R]], review_commands: Collection[str]
+) -> Callable[P, Awaitable[R]]:
     signature = inspect.signature(func)
     normalized_review_commands = {command.lower().strip() for command in review_commands}
 
     @wraps(func)
     async def queued(*args: P.args, **kwargs: P.kwargs) -> R:
         request, platform, owner, repo, number = _review_identity(signature, args, kwargs)
-        question = str(request.arguments["question"]).lower().strip()
+        arguments = cast(dict[str, object], request.arguments)
+        question = str(arguments["question"]).lower().strip()
         if question not in normalized_review_commands:
             return await func(*args, **kwargs)
 
         async with _pr_review_slot(platform, owner, repo, number):
-            try:
-                return await func(*args, **kwargs)
-            except asyncio.CancelledError:
-                review_tracker.fail(f"{owner}/{repo}", number, "Review cancelled")
-                raise
+            return await func(*args, **kwargs)
 
     return queued
