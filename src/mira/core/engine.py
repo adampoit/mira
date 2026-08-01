@@ -1181,7 +1181,9 @@ class ReviewEngine:
         try:
             pr_info = getattr(self, "_pr_info", None)
             if pr_info is not None:
-                _rules_store = IndexStore.open(pr_info.owner, pr_info.repo, platform=pr_info.platform)
+                _rules_store = IndexStore.open(
+                    pr_info.owner, pr_info.repo, platform=pr_info.platform
+                )
 
                 learned_rules = _rules_store.get_learned_rules_text()
 
@@ -1351,7 +1353,9 @@ class ReviewEngine:
             pr_info = getattr(self, "_pr_info", None)
             if pr_info is not None:
                 try:
-                    _pkg_store = IndexStore.open(pr_info.owner, pr_info.repo, platform=pr_info.platform)
+                    _pkg_store = IndexStore.open(
+                        pr_info.owner, pr_info.repo, platform=pr_info.platform
+                    )
                     try:
                         existing_packages = sorted(
                             {p.name for p in _pkg_store.list_manifest_packages()}
