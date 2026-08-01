@@ -56,13 +56,14 @@ def retry_request_is_complete(request: object) -> bool:
     """Return whether a persisted request has enough safe inputs to retry."""
     if not isinstance(request, Mapping):
         return False
-    if not _RETRY_REQUEST_REQUIRED_FIELDS.issubset(request):
+    typed_request = cast(Mapping[str, object], request)
+    if not _RETRY_REQUEST_REQUIRED_FIELDS.issubset(typed_request):
         return False
     for key in _RETRY_REQUEST_REQUIRED_FIELDS - {"pr_number"}:
-        value = request.get(key)
+        value = typed_request.get(key)
         if not isinstance(value, str) or not value:
             return False
-    pr_number = request.get("pr_number")
+    pr_number = typed_request.get("pr_number")
     return isinstance(pr_number, int) and not isinstance(pr_number, bool) and pr_number > 0
 
 
@@ -350,7 +351,8 @@ class TraceStore:
             check = session.get("provider_check")
             if not isinstance(check, dict):
                 return False
-            updated = dict(check)
+            typed_check = cast(dict[str, object], check)
+            updated = dict(typed_check)
             updated["status"] = status
             updated["updated_at"] = time.time()
             if error:
