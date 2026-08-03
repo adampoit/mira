@@ -175,11 +175,24 @@ export interface ActivityEventModel extends ReviewEventModel {
 }
 
 export type ReviewTraceStatus =
-  | "queued"
-  | "running"
-  | "completed"
-  | "failed"
-  | "interrupted"
+  "queued" | "running" | "completed" | "failed" | "interrupted"
+
+export interface ReviewTraceMetrics {
+  pi_events: number
+  llm_calls: number
+  tool_calls: number
+  tool_errors: number
+  reasoning_chars: number
+  output_chars: number
+  input_tokens: number
+  output_tokens: number
+  cache_read_tokens: number
+  cache_write_tokens: number
+  total_tokens: number
+  duration_ms: number
+  models: string[]
+  result_tools: string[]
+}
 
 export interface ReviewTraceSummary {
   id: string
@@ -201,6 +214,7 @@ export interface ReviewTraceSummary {
   attempt: number
   retry_of: string | null
   replacement_id: string | null
+  trace_metrics: ReviewTraceMetrics
   recovery_reason?: string
   error?: string
 }
