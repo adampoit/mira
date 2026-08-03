@@ -1,6 +1,7 @@
 import {
   AlertCircle,
   ArrowDown,
+  Bot,
   Brain,
   Check,
   ChevronDown,
@@ -9,10 +10,12 @@ import {
   ExternalLink,
   FileCode2,
   LoaderCircle,
+  MessageSquare,
   PauseCircle,
   RefreshCw,
   SearchCode,
   ShieldCheck,
+  Terminal,
   Wrench,
 } from "lucide-react"
 import { useEffect, useMemo, useRef, useState } from "react"
@@ -29,6 +32,7 @@ import { ConfirmDialog } from "@/components/ui/confirm-dialog"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { API_BASE, fetchJson, postJson } from "@/lib/api/http"
+import type { ReviewTraceMetrics } from "@/lib/api/types"
 import { useDocumentTitle } from "@/lib/hooks"
 import { cn } from "@/lib/utils"
 
@@ -40,6 +44,7 @@ type TraceEvent = {
   data: Record<string, unknown>
   created_at: number
 }
+type TraceMetrics = ReviewTraceMetrics
 type ReviewSession = {
   id: string
   status: "queued" | "running" | "completed" | "failed" | "interrupted"
@@ -55,6 +60,7 @@ type ReviewSession = {
   attempt: number
   retry_of: string | null
   replacement_id: string | null
+  trace_metrics: TraceMetrics
   recovery_reason?: string
   error?: string
 }
@@ -68,7 +74,7 @@ type AgentGroup = {
   finishedAt: number | null
   findings: number
 }
-type TraceView = "agents" | "milestones" | "all"
+type TraceView = "agents" | "milestones" | "pi" | "all"
 type EventPresentation = {
   icon: typeof Brain
   className: string
@@ -85,6 +91,46 @@ const eventPresentation: Record<string, EventPresentation> = {
     icon: Brain,
     className: "bg-violet-500/10 text-violet-700 dark:text-violet-400",
     label: "Analysis",
+  },
+  output: {
+    icon: MessageSquare,
+    className: "bg-indigo-500/10 text-indigo-700 dark:text-indigo-400",
+    label: "Agent output",
+  },
+  agent_start: {
+    icon: Bot,
+    className: "bg-sky-500/10 text-sky-700 dark:text-sky-400",
+    label: "Pi agent",
+  },
+  tool_call: {
+    icon: Wrench,
+    className: "bg-amber-500/10 text-amber-700 dark:text-amber-400",
+    label: "Tool call",
+  },
+  tool_result: {
+    icon: Terminal,
+    className: "bg-cyan-500/10 text-cyan-700 dark:text-cyan-400",
+    label: "Tool result",
+  },
+  result: {
+    icon: Check,
+    className: "bg-teal-500/10 text-teal-700 dark:text-teal-400",
+    label: "Model result",
+  },
+  agent_end: {
+    icon: Check,
+    className: "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400",
+    label: "Pi complete",
+  },
+  stream: {
+    icon: CircleDot,
+    className: "bg-muted text-muted-foreground",
+    label: "Stream",
+  },
+  pipeline: {
+    icon: ShieldCheck,
+    className: "bg-teal-500/10 text-teal-700 dark:text-teal-400",
+    label: "Pipeline",
   },
   action: {
     icon: Wrench,
@@ -150,17 +196,106 @@ function formatDuration(start: number, end: number) {
   return `${Math.floor(seconds / 60)}m ${seconds % 60}s`
 }
 
+function formatMilliseconds(value: number) {
+  const seconds = Math.max(0, Math.round(value / 1000))
+  if (seconds < 60) return `${seconds}s`
+  return `${Math.floor(seconds / 60)}m ${seconds % 60}s`
+}
+
+function formatCompactNumber(value: number) {
+  return new Intl.NumberFormat(undefined, { notation: "compact" }).format(value)
+}
+
+function formatCharacters(value: number) {
+  if (value < 1000) return `${value} chars`
+  return `${formatCompactNumber(value)} chars`
+}
+
+function traceMetricsFromEvents(events: TraceEvent[]): TraceMetrics {
+  const metrics: TraceMetrics = {
+    pi_events: 0,
+    llm_calls: 0,
+    tool_calls: 0,
+    tool_errors: 0,
+    reasoning_chars: 0,
+    output_chars: 0,
+    input_tokens: 0,
+    output_tokens: 0,
+    cache_read_tokens: 0,
+    cache_write_tokens: 0,
+    total_tokens: 0,
+    duration_ms: 0,
+    models: [],
+    result_tools: [],
+  }
+  const models = new Set<string>()
+  const resultTools = new Set<string>()
+  for (const event of events) {
+    if (event.data.source !== "pi") continue
+    metrics.pi_events += 1
+    if (event.kind === "agent_start") metrics.llm_calls += 1
+    if (event.kind === "tool_call") metrics.tool_calls += 1
+    if (event.kind === "tool_result" && event.data.is_error === true) {
+      metrics.tool_errors += 1
+    }
+    if (event.kind === "reasoning")
+      metrics.reasoning_chars += event.detail.length
+    if (event.kind === "output") metrics.output_chars += event.detail.length
+    if (typeof event.data.model === "string") models.add(event.data.model)
+    if (typeof event.data.result_tool === "string") {
+      resultTools.add(event.data.result_tool)
+    }
+    if (event.kind !== "agent_end") continue
+    const usage = event.data.usage
+    if (!usage || typeof usage !== "object" || Array.isArray(usage)) continue
+    const typedUsage = usage as Record<string, unknown>
+    if (typeof typedUsage.input === "number")
+      metrics.input_tokens += typedUsage.input
+    if (typeof typedUsage.output === "number")
+      metrics.output_tokens += typedUsage.output
+    if (typeof typedUsage.cacheRead === "number") {
+      metrics.cache_read_tokens += typedUsage.cacheRead
+    }
+    if (typeof typedUsage.cacheWrite === "number") {
+      metrics.cache_write_tokens += typedUsage.cacheWrite
+    }
+    if (typeof typedUsage.total === "number")
+      metrics.total_tokens += typedUsage.total
+    if (typeof event.data.duration_ms === "number") {
+      metrics.duration_ms += event.data.duration_ms
+    }
+  }
+  metrics.models = [...models]
+  metrics.result_tools = [...resultTools]
+  return metrics
+}
+
 function mergeReasoning(events: TraceEvent[]) {
   const merged: TraceEvent[] = []
   for (const event of events) {
     const previous = merged.at(-1)
-    if (event.kind === "reasoning" && previous?.kind === "reasoning") {
+    const sameStream =
+      previous &&
+      previous.kind === event.kind &&
+      (event.kind === "reasoning" || event.kind === "output") &&
+      previous.data.run_id === event.data.run_id
+    if (previous && sameStream) {
       merged[merged.length - 1] = {
         ...previous,
         id: event.id,
         created_at: event.created_at,
-        title: "Analysis update",
-        detail: `${previous.detail}${previous.detail ? "" : ""}${event.detail}`,
+        title: event.kind === "reasoning" ? "Analysis update" : "Agent output",
+        detail: `${previous.detail}${event.detail}`,
+        data: {
+          ...previous.data,
+          characters:
+            (typeof previous.data.characters === "number"
+              ? previous.data.characters
+              : previous.detail.length) +
+            (typeof event.data.characters === "number"
+              ? event.data.characters
+              : event.detail.length),
+        },
       }
     } else {
       merged.push(event)
@@ -375,6 +510,85 @@ function PhaseOverview({
   )
 }
 
+function PiTelemetry({ metrics }: { metrics: TraceMetrics }) {
+  if (!metrics.pi_events) return null
+  const modelLabel = metrics.models.length
+    ? metrics.models.join(", ")
+    : "Model details unavailable"
+  return (
+    <section
+      className="mb-7 rounded-xl border bg-card p-5"
+      aria-labelledby="pi-telemetry-title"
+    >
+      <div className="flex flex-col gap-1 sm:flex-row sm:items-baseline sm:justify-between">
+        <div>
+          <h2 id="pi-telemetry-title" className="text-sm font-semibold">
+            Pi telemetry
+          </h2>
+          <p className="mt-1 text-xs text-muted-foreground">
+            The worker stream behind this review, including model output,
+            reasoning, and repository tools.
+          </p>
+        </div>
+        <span className="font-mono text-xs text-muted-foreground">
+          {metrics.pi_events} trace events
+        </span>
+      </div>
+      <dl className="mt-5 grid grid-cols-2 gap-4 sm:grid-cols-4">
+        <div>
+          <dt className="text-xs text-muted-foreground">Pi calls</dt>
+          <dd className="mt-1 text-lg font-semibold tabular-nums">
+            {metrics.llm_calls}
+          </dd>
+        </div>
+        <div>
+          <dt className="text-xs text-muted-foreground">Tool calls</dt>
+          <dd className="mt-1 text-lg font-semibold tabular-nums">
+            {metrics.tool_calls}
+            {metrics.tool_errors > 0 && (
+              <span className="ml-1 text-xs font-normal text-destructive">
+                ({metrics.tool_errors} failed)
+              </span>
+            )}
+          </dd>
+        </div>
+        <div>
+          <dt className="text-xs text-muted-foreground">Reasoning</dt>
+          <dd className="mt-1 text-lg font-semibold tabular-nums">
+            {formatCharacters(metrics.reasoning_chars)}
+          </dd>
+        </div>
+        <div>
+          <dt className="text-xs text-muted-foreground">Tokens</dt>
+          <dd className="mt-1 text-lg font-semibold tabular-nums">
+            {metrics.total_tokens
+              ? formatCompactNumber(metrics.total_tokens)
+              : "—"}
+          </dd>
+        </div>
+      </dl>
+      <div className="mt-4 flex flex-wrap gap-x-5 gap-y-1 border-t pt-3 text-xs text-muted-foreground">
+        <span>Output: {formatCharacters(metrics.output_chars)}</span>
+        {metrics.input_tokens > 0 && (
+          <span>Input: {metrics.input_tokens.toLocaleString()}</span>
+        )}
+        {metrics.output_tokens > 0 && (
+          <span>Generated: {metrics.output_tokens.toLocaleString()}</span>
+        )}
+        {metrics.cache_read_tokens > 0 && (
+          <span>Cache read: {metrics.cache_read_tokens.toLocaleString()}</span>
+        )}
+        {metrics.duration_ms > 0 && (
+          <span>Agent time: {formatMilliseconds(metrics.duration_ms)}</span>
+        )}
+        <span className="min-w-0 truncate" title={modelLabel}>
+          Model: {modelLabel}
+        </span>
+      </div>
+    </section>
+  )
+}
+
 function AgentWorkspace({
   agents,
   selectedKey,
@@ -585,7 +799,12 @@ export function ReviewSessionPage() {
             current && {
               ...current,
               status: message.status,
-              finished_at: Date.now() / 1000,
+              finished_at:
+                message.status === "completed" ||
+                message.status === "failed" ||
+                message.status === "interrupted"
+                  ? current.finished_at || Date.now() / 1000
+                  : null,
             }
         )
     })
@@ -598,6 +817,7 @@ export function ReviewSessionPage() {
   const agents = useMemo(() => {
     const groups = new Map<string, AgentGroup>()
     for (const event of session?.events || []) {
+      if (event.data.source === "pi") continue
       const pass = typeof event.data.pass === "string" ? event.data.pass : null
       const agentId =
         typeof event.data.agent_id === "number" ? event.data.agent_id : null
@@ -663,6 +883,17 @@ export function ReviewSessionPage() {
     () => mergeReasoning(session?.events || []),
     [session]
   )
+  const piEvents = useMemo(
+    () =>
+      mergeReasoning(
+        (session?.events || []).filter((event) => event.data.source === "pi")
+      ),
+    [session]
+  )
+  const traceMetrics = useMemo(
+    () => traceMetricsFromEvents(session?.events || []),
+    [session]
+  )
   const milestones = useMemo(
     () =>
       (session?.events || []).filter((event) => {
@@ -692,7 +923,12 @@ export function ReviewSessionPage() {
   }, [])
 
   useEffect(() => {
-    if (!following || view !== "agents" || session?.status !== "running") return
+    if (
+      !following ||
+      !["agents", "pi"].includes(view) ||
+      session?.status !== "running"
+    )
+      return
     const frame = requestAnimationFrame(() =>
       bottomRef.current?.scrollIntoView({ block: "end" })
     )
@@ -830,16 +1066,21 @@ export function ReviewSessionPage() {
           aria-labelledby="interruption-title"
         >
           <div>
-            <h2 id="interruption-title" className="font-medium text-amber-900 dark:text-amber-200">
+            <h2
+              id="interruption-title"
+              className="font-medium text-amber-900 dark:text-amber-200"
+            >
               This review did not finish
             </h2>
             <p className="mt-1 max-w-3xl text-amber-900/80 dark:text-amber-200/80">
-              {session.recovery_reason || session.error ||
+              {session.recovery_reason ||
+                session.error ||
                 "The review process was interrupted before it could publish a final result."}
             </p>
             {session.finished_at && (
               <p className="mt-1 text-xs text-amber-900/70 dark:text-amber-200/70">
-                Interrupted {new Date(session.finished_at * 1000).toLocaleString()}
+                Interrupted{" "}
+                {new Date(session.finished_at * 1000).toLocaleString()}
               </p>
             )}
           </div>
@@ -851,14 +1092,25 @@ export function ReviewSessionPage() {
       )}
 
       {(session.retry_of || session.replacement_id) && (
-        <nav className="mb-6 flex flex-wrap gap-x-4 gap-y-2 text-sm" aria-label="Related review runs">
+        <nav
+          className="mb-6 flex flex-wrap gap-x-4 gap-y-2 text-sm"
+          aria-label="Related review runs"
+        >
           {session.retry_of && (
-            <Button variant="link" className="h-auto p-0" onClick={() => navigate(`/reviews/${session.retry_of}`)}>
+            <Button
+              variant="link"
+              className="h-auto p-0"
+              onClick={() => navigate(`/reviews/${session.retry_of}`)}
+            >
               View previous attempt
             </Button>
           )}
           {session.replacement_id && (
-            <Button variant="link" className="h-auto p-0" onClick={() => navigate(`/reviews/${session.replacement_id}`)}>
+            <Button
+              variant="link"
+              className="h-auto p-0"
+              onClick={() => navigate(`/reviews/${session.replacement_id}`)}
+            >
               View replacement attempt
             </Button>
           )}
@@ -866,6 +1118,7 @@ export function ReviewSessionPage() {
       )}
 
       <PhaseOverview session={session} agents={agents} />
+      <PiTelemetry metrics={traceMetrics} />
 
       <div className="grid gap-8 py-7 lg:grid-cols-[minmax(0,1fr)_15rem]">
         <section className="min-w-0" aria-labelledby="trace-title">
@@ -886,6 +1139,9 @@ export function ReviewSessionPage() {
               <TabsList aria-label="Trace view">
                 <TabsTrigger value="agents">Agents</TabsTrigger>
                 <TabsTrigger value="milestones">Milestones</TabsTrigger>
+                {piEvents.length > 0 && (
+                  <TabsTrigger value="pi">Pi internals</TabsTrigger>
+                )}
                 <TabsTrigger value="all">All activity</TabsTrigger>
               </TabsList>
             </Tabs>
@@ -910,6 +1166,30 @@ export function ReviewSessionPage() {
                 />
               ))}
             </ol>
+          )}
+          {view === "pi" && (
+            <>
+              <div className="mb-5 flex items-start gap-3 rounded-lg bg-violet-500/5 p-4 text-sm text-muted-foreground">
+                <Brain
+                  className="mt-0.5 size-4 shrink-0 text-violet-600"
+                  aria-hidden
+                />
+                <p>
+                  The raw Pi stream: reasoning deltas, assistant output, tool
+                  calls and results, model submissions, and worker failures.
+                </p>
+              </div>
+              <ol aria-live="polite" aria-relevant="additions">
+                {piEvents.map((event, index) => (
+                  <EventRow
+                    key={event.id}
+                    event={event}
+                    isLast={index === piEvents.length - 1}
+                    showAgent
+                  />
+                ))}
+              </ol>
+            </>
           )}
           {view === "all" && (
             <>
@@ -965,7 +1245,7 @@ export function ReviewSessionPage() {
         </aside>
       </div>
 
-      {running && !following && view === "agents" && (
+      {running && !following && ["agents", "pi"].includes(view) && (
         <Button
           type="button"
           className="fixed right-5 bottom-5 z-30 gap-2 rounded-full shadow-lg sm:right-7 sm:bottom-7"
