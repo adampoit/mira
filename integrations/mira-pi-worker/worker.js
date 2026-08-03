@@ -24,6 +24,24 @@ const configPromise = new Promise((resolve, reject) => {
 const send = (message) => process.stdout.write(`${JSON.stringify(message)}\n`);
 const REPOSITORY_METHODS = new Set(["read", "grep", "find", "ls"]);
 const MAX_SUBMISSION_NUDGES = 2;
+const MAX_TRACE_VALUE_CHARS = 20000;
+
+function traceValue(value) {
+  if (value === undefined) return null;
+  if (typeof value === "string")
+    return value.length > MAX_TRACE_VALUE_CHARS
+      ? `${value.slice(0, MAX_TRACE_VALUE_CHARS)}… [truncated]`
+      : value;
+  try {
+    const encoded = JSON.stringify(value);
+    if (typeof encoded !== "string") return String(value);
+    return encoded.length > MAX_TRACE_VALUE_CHARS
+      ? `${encoded.slice(0, MAX_TRACE_VALUE_CHARS)}… [truncated]`
+      : value;
+  } catch {
+    return String(value);
+  }
+}
 
 function validateConfig(message) {
   if (message.type !== "start") throw new Error("Expected start message");
@@ -218,16 +236,50 @@ async function main() {
   const timer = setInterval(flush, 300);
   session.subscribe((event) => {
     if (event.type === "message_update") {
-      if (event.assistantMessageEvent.type === "thinking_delta")
-        thinkingBuffer += event.assistantMessageEvent.delta;
-      if (event.assistantMessageEvent.type === "text_delta")
-        textBuffer += event.assistantMessageEvent.delta;
+      const assistantEvent = event.assistantMessageEvent;
+      if (assistantEvent.type === "thinking_delta")
+        thinkingBuffer += assistantEvent.delta;
+      if (assistantEvent.type === "text_delta")
+        textBuffer += assistantEvent.delta;
+      if (
+        assistantEvent.type === "thinking_start" ||
+        assistantEvent.type === "thinking_end"
+      ) {
+        flush(true);
+        send({
+          type: "stream_boundary",
+          channel: "thinking",
+          boundary: assistantEvent.type === "thinking_start" ? "start" : "end",
+        });
+      }
+      if (
+        assistantEvent.type === "text_start" ||
+        assistantEvent.type === "text_end"
+      ) {
+        flush(true);
+        send({
+          type: "stream_boundary",
+          channel: "text",
+          boundary: assistantEvent.type === "text_start" ? "start" : "end",
+        });
+      }
     } else if (event.type === "tool_execution_start") {
       flush(true);
-      send({ type: "tool_start", tool: event.toolName, args: event.args });
+      send({
+        type: "tool_start",
+        id: event.toolCallId,
+        tool: event.toolName,
+        args: traceValue(event.args),
+      });
     } else if (event.type === "tool_execution_end") {
       flush(true);
-      send({ type: "tool_end", tool: event.toolName, is_error: event.isError });
+      send({
+        type: "tool_end",
+        id: event.toolCallId,
+        tool: event.toolName,
+        result: traceValue(event.result),
+        is_error: event.isError,
+      });
     }
   });
 
@@ -264,6 +316,7 @@ async function main() {
     });
   } finally {
     clearInterval(timer);
+    flush(true);
     session.dispose();
     process.stdin.pause();
   }

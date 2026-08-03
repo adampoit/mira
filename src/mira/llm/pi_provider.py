@@ -12,6 +12,8 @@ import logging
 import os
 import re
 import tempfile
+import time
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import ClassVar, TypeAlias, cast
 from weakref import WeakKeyDictionary
@@ -24,6 +26,36 @@ logger = logging.getLogger(__name__)
 
 JsonValue: TypeAlias = str | int | float | bool | None | list["JsonValue"] | dict[str, "JsonValue"]
 JsonObject: TypeAlias = dict[str, JsonValue]
+PiTraceSink: TypeAlias = Callable[[str, str, Mapping[str, object]], None]
+
+_MAX_TRACE_VALUE_CHARS = 20_000
+
+
+def _trace_text(value: object) -> str:
+    if isinstance(value, str):
+        text = value
+    else:
+        try:
+            text = json.dumps(value, ensure_ascii=False, indent=2)
+        except (TypeError, ValueError):
+            text = str(value)
+    if len(text) <= _MAX_TRACE_VALUE_CHARS:
+        return text
+    return f"{text[:_MAX_TRACE_VALUE_CHARS].rstrip()}… [truncated]"
+
+
+def _trace_value(value: object) -> object:
+    if isinstance(value, str) and len(value) <= _MAX_TRACE_VALUE_CHARS:
+        return value
+    if isinstance(value, str):
+        return f"{value[:_MAX_TRACE_VALUE_CHARS].rstrip()}… [truncated]"
+    try:
+        encoded = json.dumps(value, ensure_ascii=False)
+    except (TypeError, ValueError):
+        return str(value)
+    if len(encoded) <= _MAX_TRACE_VALUE_CHARS:
+        return value
+    return f"{encoded[:_MAX_TRACE_VALUE_CHARS].rstrip()}… [truncated]"
 
 
 def _parse_json_object(payload: bytes) -> JsonObject:
@@ -216,6 +248,26 @@ class PiLLMProvider:
         self._pr_info: PRInfo | None = None
         self._repo_tree: list[str] = []
         self._file_cache: dict[str, str] = {}
+        self._trace_sink: PiTraceSink | None = None
+
+    def set_trace_sink(self, sink: PiTraceSink | None) -> None:
+        """Attach a best-effort sink for the worker's live agent events."""
+        self._trace_sink = sink
+
+    def _trace(
+        self,
+        event_type: str,
+        detail: str = "",
+        data: Mapping[str, object] | None = None,
+    ) -> None:
+        sink = self._trace_sink
+        if sink is None:
+            return
+        try:
+            sink(event_type, detail, dict(data or {}))
+        except Exception as exc:
+            # Observability must never change the review result.
+            logger.debug("Pi trace sink failed: %s", exc)
 
     async def bind_repository(self, provider: RepositoryProvider, pr_info: PRInfo) -> None:
         """Give Pi read-only access to the PR head through Mira's provider API."""
@@ -323,6 +375,19 @@ class PiLLMProvider:
         if not isinstance(function, dict) or not isinstance(function.get("name"), str):
             raise ValueError("Pi result tool must have a function name")
         result_tool_name = function["name"]
+        run_id = os.urandom(6).hex()
+        started_at = time.monotonic()
+        trace_base: dict[str, object] = {
+            "run_id": run_id,
+            "model": self.model,
+            "thinking_level": self.thinking_level,
+            "result_tool": result_tool_name,
+        }
+        self._trace(
+            "agent_start",
+            f"Pi worker started for {result_tool_name}.",
+            trace_base,
+        )
         with tempfile.TemporaryDirectory(prefix="mira-pi-") as workdir:
             session_root = Path(
                 os.environ.get("MIRA_PI_SESSION_DIR", str(Path(workdir) / "sessions"))
@@ -340,7 +405,9 @@ class PiLLMProvider:
                     env=_worker_environment(),
                 )
             except OSError as exc:
-                raise RuntimeError(f"Unable to start Pi worker {worker!r}: {exc}") from exc
+                detail = f"Unable to start Pi worker {worker!r}: {exc}"
+                self._trace("error", detail, trace_base)
+                raise RuntimeError(detail) from exc
 
             stdin = process.stdin
             stdout = process.stdout
@@ -397,11 +464,89 @@ class PiLLMProvider:
                         )
                         if "result" not in message:
                             raise RuntimeError("Pi worker completed without a result")
-                        return message["result"]
+                        result = message["result"]
+                        duration_ms = round((time.monotonic() - started_at) * 1000)
+                        trace_data = {
+                            **trace_base,
+                            "result": _trace_value(result),
+                            "usage": usage,
+                            "duration_ms": duration_ms,
+                        }
+                        self._trace("result", _trace_text(result), trace_data)
+                        self._trace(
+                            "agent_end",
+                            "Pi worker completed.",
+                            {**trace_base, "usage": usage, "duration_ms": duration_ms},
+                        )
+                        return result
                     elif kind == "error":
                         raise RuntimeError(str(message.get("error") or "Pi worker failed"))
-                    elif kind in {"thinking_delta", "text_delta", "tool_start", "tool_end"}:
-                        logger.debug("Pi %s event: %s", result_tool_name, kind)
+                    elif kind == "thinking_delta":
+                        delta = message.get("delta")
+                        if isinstance(delta, str) and delta:
+                            self._trace(
+                                "thinking_delta",
+                                delta,
+                                {
+                                    **trace_base,
+                                    "channel": "thinking",
+                                    "characters": len(delta),
+                                },
+                            )
+                    elif kind == "text_delta":
+                        delta = message.get("delta")
+                        if isinstance(delta, str) and delta:
+                            self._trace(
+                                "text_delta",
+                                delta,
+                                {
+                                    **trace_base,
+                                    "channel": "text",
+                                    "characters": len(delta),
+                                },
+                            )
+                    elif kind == "stream_boundary":
+                        channel = message.get("channel")
+                        boundary = message.get("boundary")
+                        self._trace(
+                            "stream_boundary",
+                            "",
+                            {
+                                **trace_base,
+                                "channel": channel,
+                                "boundary": boundary,
+                            },
+                        )
+                    elif kind == "tool_start":
+                        tool = message.get("tool")
+                        args = message.get("args")
+                        tool_name = tool if isinstance(tool, str) else "unknown"
+                        self._trace(
+                            "tool_start",
+                            f"{tool_name}({_trace_text(args)})",
+                            {
+                                **trace_base,
+                                "tool": tool_name,
+                                "tool_call_id": _trace_value(message.get("id")),
+                                "args": _trace_value(args),
+                            },
+                        )
+                    elif kind == "tool_end":
+                        tool = message.get("tool")
+                        result = message.get("result")
+                        tool_name = tool if isinstance(tool, str) else "unknown"
+                        is_error = message.get("is_error") is True
+                        self._trace(
+                            "tool_end",
+                            _trace_text(result),
+                            {
+                                **trace_base,
+                                "tool": tool_name,
+                                "tool_call_id": _trace_value(message.get("id")),
+                                "result": _trace_value(result),
+                                "is_error": is_error,
+                            },
+                        )
                     else:
                         raise RuntimeError(f"Pi worker emitted unknown protocol message: {kind!r}")
                 stderr_text = b"".join(stderr_chunks).decode(errors="replace").strip()
@@ -417,6 +562,12 @@ class PiLLMProvider:
                 if not isinstance(result, str):
                     raise RuntimeError("Pi worker returned a non-string submission")
                 return result
+            except asyncio.CancelledError:
+                self._trace("error", "Pi worker cancelled.", {**trace_base, "cancelled": True})
+                raise
+            except Exception as exc:
+                self._trace("error", str(exc) or type(exc).__name__, trace_base)
+                raise
             finally:
                 if process.returncode is None:
                     process.kill()
