@@ -61,6 +61,62 @@ def test_trace_store_records_and_summarizes_session(tmp_path: Path, pr_info: PRI
     assert "events" not in summary
 
 
+def test_trace_metrics_summarize_pi_activity(tmp_path: Path, pr_info: PRInfo) -> None:
+    store = TraceStore(tmp_path)
+    trace = store.start(pr_info)
+    trace.emit(
+        "action",
+        "Review agent 1 started",
+        data={"pass": "review", "agent_id": 1},
+    )
+    trace.emit(
+        "agent_start",
+        "Pi worker started",
+        data={"source": "pi", "model": "test-model", "result_tool": "submit_review"},
+    )
+    trace.emit(
+        "reasoning",
+        "Analysis update",
+        "Thinking about the diff",
+        {"source": "pi", "model": "test-model"},
+    )
+    trace.emit(
+        "tool_call",
+        "read(src/app.py)",
+        data={"source": "pi", "tool": "read"},
+    )
+    trace.emit(
+        "tool_result",
+        "[error]",
+        data={"source": "pi", "tool": "read", "is_error": True},
+    )
+    trace.emit(
+        "agent_end",
+        "Pi worker completed",
+        data={
+            "source": "pi",
+            "usage": {"input": 10, "output": 5, "cacheRead": 2, "cacheWrite": 1, "total": 18},
+            "duration_ms": 1200,
+        },
+    )
+
+    metrics = cast(dict[str, object], store.get(trace.session_id)["trace_metrics"])
+    assert metrics["pi_events"] == 5
+    assert metrics["llm_calls"] == 1
+    assert metrics["tool_calls"] == 1
+    assert metrics["tool_errors"] == 1
+    assert metrics["reasoning_chars"] == len("Thinking about the diff")
+    assert metrics["input_tokens"] == 10
+    assert metrics["cache_read_tokens"] == 2
+    assert metrics["cache_write_tokens"] == 1
+    assert metrics["total_tokens"] == 18
+    assert metrics["duration_ms"] == 1200
+    assert metrics["models"] == ["test-model"]
+    summary = store.list_sessions()[0]
+    assert summary["current_pass"] == "review"
+    assert summary["agent_count"] == 1
+
+
 def test_trace_context_can_be_refreshed(tmp_path: Path, pr_info: PRInfo) -> None:
     store = TraceStore(tmp_path)
     trace = store.start_details(

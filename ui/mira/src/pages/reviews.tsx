@@ -304,6 +304,13 @@ export function ReviewsPage() {
                       <span>
                         {session.completed_agents} agents complete ·{" "}
                         {session.event_count} events
+                        {session.trace_metrics.llm_calls > 0 && (
+                          <>
+                            {" "}
+                            · {session.trace_metrics.llm_calls} Pi calls ·{" "}
+                            {session.trace_metrics.tool_calls} tools
+                          </>
+                        )}
                       </span>
                       <span className="flex items-center gap-1 font-medium text-foreground">
                         Watch live{" "}

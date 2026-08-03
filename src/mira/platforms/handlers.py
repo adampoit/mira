@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any, cast
 
@@ -395,6 +396,61 @@ def _trace_finding(comment: ReviewComment) -> dict[str, object]:
     }
 
 
+def _trace_pi_event(
+    trace: Any,
+    pass_name: str,
+    event_type: str,
+    detail: str,
+    data: Mapping[str, object] | None,
+) -> None:
+    """Translate Pi's worker protocol into the dashboard's trace vocabulary."""
+    typed_data = dict(data or {})
+    event_kinds = {
+        "agent_start": "agent_start",
+        "thinking_delta": "reasoning",
+        "text_delta": "output",
+        "stream_boundary": "stream",
+        "tool_start": "tool_call",
+        "tool_end": "tool_result",
+        "result": "result",
+        "agent_end": "agent_end",
+        "error": "error",
+    }
+    kind = event_kinds.get(event_type, "action")
+    tool = typed_data.get("tool")
+    if event_type == "tool_start":
+        suffix = f"called {tool}" if isinstance(tool, str) else "called a tool"
+    elif event_type == "tool_end":
+        suffix = f"{tool} returned" if isinstance(tool, str) else "tool returned"
+    elif event_type == "agent_start":
+        suffix = "started"
+    elif event_type == "agent_end":
+        suffix = "completed"
+    elif event_type == "error":
+        suffix = "failed"
+    elif event_type == "result":
+        suffix = "submitted a result"
+    elif event_type == "stream_boundary":
+        channel = typed_data.get("channel")
+        boundary = typed_data.get("boundary")
+        suffix = f"{channel or 'stream'} {boundary or 'updated'}"
+    else:
+        suffix = event_type.replace("_", " ")
+    event_data = {
+        **typed_data,
+        "source": "pi",
+        "event_type": event_type,
+        "pass": pass_name,
+        "agent_id": 1,
+    }
+    trace.emit(
+        kind,
+        f"Pi {pass_name} agent 1 {suffix}",
+        detail,
+        event_data,
+    )
+
+
 class _ReviewLifecycleEngine:
     def __init__(
         self,
@@ -450,6 +506,39 @@ class _ReviewLifecycleEngine:
             )
             self._trace_session_id = trace.session_id
 
+    def _bind_pi_trace(self, trace: Any) -> list[Callable[[Any], Any]]:
+        setters: list[Callable[[Any], Any]] = []
+        seen: set[int] = set()
+        providers = (
+            ("review", getattr(self._engine, "llm", None)),
+            ("indexing", getattr(self._engine, "indexing_llm", None)),
+        )
+        for pass_name, provider in providers:
+            if provider is None or id(provider) in seen:
+                continue
+            setter = getattr(type(provider), "set_trace_sink", None)
+            if not callable(setter):
+                continue
+            seen.add(id(provider))
+            setter(
+                provider,
+                lambda event_type, detail="", data=None, pass_name=pass_name: _trace_pi_event(
+                    trace, pass_name, event_type, detail, data
+                ),
+            )
+            setters.append(
+                lambda sink=None, provider=provider, setter=setter: setter(provider, sink)
+            )
+        return setters
+
+    @staticmethod
+    def _clear_pi_trace(setters: list[Callable[[Any], Any]]) -> None:
+        for setter in setters:
+            try:
+                setter(None)
+            except Exception as exc:
+                logger.debug("Could not clear Pi trace sink: %s", exc)
+
     async def review_pr(self, pr_url: str) -> ReviewResult:
         from mira.dashboard.review_traces import review_lifecycle
 
@@ -480,34 +569,65 @@ class _ReviewLifecycleEngine:
             pr_info = await self._provider.get_pr_info(pr_url)
             if isinstance(pr_info, PRInfo):
                 trace.update_context(pr_info)
-            agent = {"pass": "review", "agent_id": 1}
-            trace.emit(
-                "action",
-                "Review agent 1 started",
-                "Mira is analyzing the pull request.",
-                agent,
-            )
-            result = await self._engine.review_pr(pr_url)
-            findings = [_trace_finding(comment) for comment in result.comments]
-            trace.emit(
-                "decision",
-                "Review agent 1 complete",
-                f"Returned {len(findings)} final finding(s).",
-                {**agent, "findings": findings},
-            )
-            trace.emit(
-                "finding" if findings else "complete",
-                "Final review prepared",
-                result.summary or "No actionable issues survived review.",
-                {"findings": findings, "token_usage": result.token_usage},
-            )
-            trace.emit(
-                "complete",
-                "Review complete",
-                f"Posted {len(findings)} finding(s).",
-                {"findings": len(findings)},
-            )
-            return result
+            pi_setters = self._bind_pi_trace(trace)
+            try:
+                agent = {"pass": "review", "agent_id": 1}
+                trace.emit(
+                    "action",
+                    "Review agent 1 started",
+                    "Mira is analyzing the pull request.",
+                    agent,
+                )
+                result = await self._engine.review_pr(pr_url)
+                findings = [_trace_finding(comment) for comment in result.comments]
+                audit = getattr(result, "audit", [])
+                reviewed_files = getattr(result, "reviewed_files", 0)
+                reviewed_paths = getattr(result, "reviewed_paths", [])
+                skipped_paths = getattr(result, "skipped_paths", [])
+                if not isinstance(reviewed_files, int):
+                    reviewed_files = 0
+                if not isinstance(reviewed_paths, list):
+                    reviewed_paths = []
+                if not isinstance(skipped_paths, list):
+                    skipped_paths = []
+                if isinstance(audit, list) and audit:
+                    trace.emit(
+                        "pipeline",
+                        "Review pipeline audit",
+                        f"Recorded {len(audit)} diagnostic pipeline event(s).",
+                        {"audit": audit},
+                    )
+                trace.emit(
+                    "decision",
+                    "Review agent 1 complete",
+                    f"Returned {len(findings)} final finding(s).",
+                    {
+                        **agent,
+                        "findings": findings,
+                        "audit_events": len(audit) if isinstance(audit, list) else 0,
+                    },
+                )
+                trace.emit(
+                    "finding" if findings else "complete",
+                    "Final review prepared",
+                    result.summary or "No actionable issues survived review.",
+                    {
+                        "findings": findings,
+                        "token_usage": result.token_usage,
+                        "reviewed_files": reviewed_files,
+                        "reviewed_paths": reviewed_paths,
+                        "skipped_paths": skipped_paths,
+                    },
+                )
+                trace.emit(
+                    "complete",
+                    "Review complete",
+                    f"Posted {len(findings)} finding(s).",
+                    {"findings": len(findings)},
+                )
+                return result
+            finally:
+                self._clear_pi_trace(pi_setters)
 
 
 def _with_review_lifecycle(
