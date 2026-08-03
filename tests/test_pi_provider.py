@@ -52,6 +52,12 @@ elif scenario == "request":
     print(json.dumps({"type": "done", "result": json.dumps(request)}), flush=True)
 elif scenario == "text":
     print(json.dumps({"type": "done", "result": json.dumps({"content": "plain response"})}), flush=True)
+elif scenario == "trace":
+    print(json.dumps({"type": "thinking_delta", "delta": "Inspecting the diff."}), flush=True)
+    print(json.dumps({"type": "text_delta", "delta": "I found a likely issue."}), flush=True)
+    print(json.dumps({"type": "tool_start", "id": "call-1", "tool": "read", "args": {"path": "src/app.py"}}), flush=True)
+    print(json.dumps({"type": "tool_end", "id": "call-1", "tool": "read", "result": "1: pass", "is_error": False}), flush=True)
+    print(json.dumps({"type": "done", "result": "{\\"summary\\":\\"ok\\"}", "usage": {"input": 7, "output": 4, "cacheRead": 2, "cacheWrite": 1, "total": 13}}), flush=True)
 elif scenario == "tools":
     responses = []
     calls = [
@@ -91,6 +97,39 @@ async def test_pi_worker_returns_structured_output(fake_worker: Path) -> None:
 
     assert json.loads(result) == {"summary": "ok"}
     assert provider.usage == {"input_tokens": 7, "output_tokens": 4, "total_tokens": 11}
+
+
+@pytest.mark.asyncio
+async def test_pi_worker_forwards_agent_trace_events(fake_worker: Path) -> None:
+    _ = (fake_worker.parent / "scenario").write_text("trace")
+    provider = _pi_provider()
+    events: list[tuple[str, str, dict[str, object]]] = []
+    provider.set_trace_sink(
+        lambda event_type, detail, data: events.append((event_type, detail, dict(data)))
+    )
+
+    result = await provider.review([{"role": "user", "content": "review"}])
+
+    assert json.loads(result) == {"summary": "ok"}
+    assert [event[0] for event in events] == [
+        "agent_start",
+        "thinking_delta",
+        "text_delta",
+        "tool_start",
+        "tool_end",
+        "result",
+        "agent_end",
+    ]
+    assert events[1][1] == "Inspecting the diff."
+    assert events[3][2]["tool"] == "read"
+    assert events[4][2]["result"] == "1: pass"
+    assert events[-1][2]["usage"] == {
+        "input": 7,
+        "output": 4,
+        "cacheRead": 2,
+        "cacheWrite": 1,
+        "total": 13,
+    }
 
 
 @pytest.mark.asyncio
