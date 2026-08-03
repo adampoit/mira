@@ -414,8 +414,77 @@ class TraceStore:
             session["replacement_id"] = replacement_id
             self._write(session)
 
+    @staticmethod
+    def _trace_metrics(events: list[TraceEvent]) -> TraceData:
+        metrics: TraceData = {
+            "pi_events": 0,
+            "llm_calls": 0,
+            "tool_calls": 0,
+            "tool_errors": 0,
+            "reasoning_chars": 0,
+            "output_chars": 0,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 0,
+            "total_tokens": 0,
+            "duration_ms": 0,
+            "models": [],
+            "result_tools": [],
+        }
+        models: set[str] = set()
+        result_tools: set[str] = set()
+        for event in events:
+            data = TraceStore._event_data(event)
+            if data.get("source") != "pi":
+                continue
+            metrics["pi_events"] = cast(int, metrics["pi_events"]) + 1
+            kind = event.get("kind")
+            detail = event.get("detail")
+            if kind == "agent_start":
+                metrics["llm_calls"] = cast(int, metrics["llm_calls"]) + 1
+            elif kind == "tool_call":
+                metrics["tool_calls"] = cast(int, metrics["tool_calls"]) + 1
+            elif kind == "tool_result" and data.get("is_error") is True:
+                metrics["tool_errors"] = cast(int, metrics["tool_errors"]) + 1
+            if kind == "reasoning" and isinstance(detail, str):
+                metrics["reasoning_chars"] = cast(int, metrics["reasoning_chars"]) + len(detail)
+            elif kind == "output" and isinstance(detail, str):
+                metrics["output_chars"] = cast(int, metrics["output_chars"]) + len(detail)
+            model = data.get("model")
+            if isinstance(model, str) and model:
+                models.add(model)
+            result_tool = data.get("result_tool")
+            if isinstance(result_tool, str) and result_tool:
+                result_tools.add(result_tool)
+            if kind != "agent_end":
+                continue
+            duration = data.get("duration_ms")
+            if isinstance(duration, int | float) and not isinstance(duration, bool):
+                metrics["duration_ms"] = cast(int, metrics["duration_ms"]) + int(duration)
+            usage = data.get("usage")
+            if not isinstance(usage, dict):
+                continue
+            typed_usage = cast(dict[str, object], usage)
+            for metric, key in (
+                ("input_tokens", "input"),
+                ("output_tokens", "output"),
+                ("cache_read_tokens", "cacheRead"),
+                ("cache_write_tokens", "cacheWrite"),
+                ("total_tokens", "total"),
+            ):
+                value = typed_usage.get(key)
+                if isinstance(value, int | float) and not isinstance(value, bool):
+                    metrics[metric] = cast(int, metrics[metric]) + int(value)
+        metrics["models"] = sorted(models)
+        metrics["result_tools"] = sorted(result_tools)
+        return metrics
+
     def get(self, session_id: str) -> ReviewSession:
-        return self._normalize(self._read(session_id))
+        session = self._normalize(self._read(session_id))
+        events = cast(list[TraceEvent], session.get("events", []))
+        session["trace_metrics"] = self._trace_metrics(events)
+        return session
 
     def list_sessions(self, limit: int = 200) -> list[ReviewSession]:
         sessions: list[ReviewSession] = []
@@ -429,7 +498,13 @@ class TraceStore:
             except (OSError, json.JSONDecodeError):
                 continue
             events = cast(list[TraceEvent], session.pop("events", []))
-            pass_events = [event for event in events if self._event_data(event).get("pass")]
+            session["trace_metrics"] = self._trace_metrics(events)
+            pass_events = [
+                event
+                for event in events
+                if self._event_data(event).get("pass")
+                and self._event_data(event).get("source") != "pi"
+            ]
             current = pass_events[-1] if pass_events else None
             findings = 0
             agents: set[tuple[str, int]] = set()
@@ -439,6 +514,8 @@ class TraceStore:
                 event_findings = data.get("findings")
                 if isinstance(event_findings, list):
                     findings = len(cast(list[object], event_findings))
+                if data.get("source") == "pi":
+                    continue
                 pass_name = data.get("pass")
                 agent_id = data.get("agent_id")
                 if isinstance(pass_name, str) and isinstance(agent_id, int):
@@ -601,6 +678,7 @@ class TraceStore:
         _ = normalized.setdefault("retry_of", None)
         _ = normalized.setdefault("replacement_id", None)
         _ = normalized.setdefault("provider_check", None)
+        _ = normalized.setdefault("trace_metrics", {})
         _ = normalized.setdefault("recovery_status", None)
         _ = normalized.setdefault("recovery_detail", None)
         _ = normalized.setdefault("finished_at", None)
