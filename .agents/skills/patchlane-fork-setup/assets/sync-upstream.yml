@@ -2,7 +2,7 @@ name: Sync Upstream Integration
 
 on:
   schedule:
-    - cron: "0 10 * * *"
+    - cron: '0 10 * * *'
   workflow_dispatch:
     inputs:
       no_push:
@@ -14,12 +14,12 @@ on:
         description: Override the configured source, such as release:latest or branch:main.
         type: string
         required: false
-        default: ""
+        default: ''
       patch_refs:
         description: Override the configured comma-separated patch branches.
         type: string
         required: false
-        default: ""
+        default: ''
 
 permissions:
   contents: read
@@ -43,10 +43,10 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: "22"
+          node-version: '22'
 
       - name: Run patchlane sync
-        run: npx patchlane@0.5.2 sync
+        run: npx patchlane@0.5.3 sync
         env:
           GH_TOKEN: ${{ steps.patchlane-token.outputs.token }}
           UPSTREAM_SOURCE: ${{ inputs.source }}
