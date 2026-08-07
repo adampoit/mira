@@ -4,7 +4,6 @@ import {
   Bot,
   Brain,
   Check,
-  ChevronDown,
   Circle,
   CircleDot,
   ExternalLink,
@@ -23,11 +22,6 @@ import { useNavigate, useParams } from "react-router"
 
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import {
-  Collapsible,
-  CollapsibleContent,
-  CollapsibleTrigger,
-} from "@/components/ui/collapsible"
 import { ConfirmDialog } from "@/components/ui/confirm-dialog"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
@@ -311,34 +305,74 @@ function cleanedEventTitle(event: TraceEvent) {
   if (!pass || agentId === null) return event.title
   const prefix = new RegExp(`^Pi ${pass} agent ${agentId}(?:: )?`, "i")
   const cleaned = event.title.replace(prefix, "")
-  if (/^reasoning$|^update$/i.test(cleaned)) return "Analysis update"
+  if (event.kind === "reasoning") return "Model analysis"
+  if (event.kind === "output") return "Model response"
   if (/^complete$/i.test(cleaned)) return `${agentName(pass)} complete`
-  if (/^Starting /i.test(event.title)) return `${agentName(pass)} started`
+  if (/^started$/i.test(cleaned) || /^Starting /i.test(event.title)) {
+    return `${agentName(pass)} started`
+  }
   return cleaned || event.title
+}
+
+const hiddenEventData = new Set([
+  "source",
+  "event_type",
+  "pass",
+  "agent_id",
+  "run_id",
+  "characters",
+  "channel",
+  "boundary",
+  "result",
+])
+
+const eventDataFields: Record<string, Set<string>> = {
+  reasoning: new Set(),
+  output: new Set(),
+  stream: new Set(),
+  agent_start: new Set(["model", "thinking_level", "result_tool"]),
+  tool_call: new Set(),
+  tool_result: new Set(["is_error"]),
+  result: new Set(["model", "result_tool", "usage", "duration_ms"]),
+  agent_end: new Set(["model", "usage", "duration_ms"]),
+  error: new Set(["model", "result_tool"]),
+}
+
+function formatEventValue(value: unknown) {
+  if (Array.isArray(value) && value.every((item) => typeof item !== "object")) {
+    return value.join(", ")
+  }
+  if (typeof value === "object" && value !== null) {
+    return JSON.stringify(value, null, 2)
+  }
+  return String(value)
 }
 
 function EventRow({
   event,
   isLast,
   showAgent = false,
+  streaming = false,
 }: {
   event: TraceEvent
   isLast: boolean
   showAgent?: boolean
+  streaming?: boolean
 }) {
   const presentation = getEventPresentation(event.kind)
   const Icon = presentation.icon
   const pass = typeof event.data.pass === "string" ? event.data.pass : ""
   const agentId =
     typeof event.data.agent_id === "number" ? event.data.agent_id : null
+  const visibleFields = eventDataFields[event.kind]
   const detailData = Object.entries(event.data || {}).filter(
-    ([key]) => !["pass", "agent_id"].includes(key)
+    ([key, value]) =>
+      (visibleFields ? visibleFields.has(key) : !hiddenEventData.has(key)) &&
+      !(key === "is_error" && value === false)
   )
-  const hasData = detailData.length > 0
-  const hasLongDetail = event.detail.length > 500
-  const visibleDetail = hasLongDetail
-    ? `${event.detail.slice(0, 420).trim()}…`
-    : event.detail
+  const isModelStream = event.kind === "reasoning" || event.kind === "output"
+  const isActivelyStreaming = streaming && isModelStream
+
   return (
     <li className="relative flex gap-4 pb-6">
       {!isLast && (
@@ -355,7 +389,7 @@ function EventRow({
       >
         <Icon className="size-4" aria-hidden />
       </span>
-      <Collapsible className="min-w-0 flex-1 pt-0.5">
+      <article className="min-w-0 flex-1 pt-0.5">
         <div className="flex flex-wrap items-start justify-between gap-x-4 gap-y-1">
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-2">
@@ -371,11 +405,6 @@ function EventRow({
                 </Badge>
               )}
             </div>
-            {visibleDetail && (
-              <p className="mt-1 max-w-3xl text-sm leading-6 whitespace-pre-wrap text-muted-foreground">
-                {visibleDetail}
-              </p>
-            )}
           </div>
           <time
             className="shrink-0 text-xs text-muted-foreground"
@@ -384,50 +413,74 @@ function EventRow({
             {relativeTime(event.created_at)}
           </time>
         </div>
-        {(hasData || hasLongDetail) && (
-          <>
-            <CollapsibleTrigger asChild>
-              <Button
-                variant="ghost"
-                size="sm"
-                className="group mt-2 h-7 px-2 text-xs text-muted-foreground"
-              >
-                {hasLongDetail ? "Read full event" : "Details"}
-                <ChevronDown className="size-3.5 transition-transform group-data-[state=open]:rotate-180" />
-              </Button>
-            </CollapsibleTrigger>
-            <CollapsibleContent>
-              {hasLongDetail && (
-                <p className="mt-2 max-w-3xl rounded-md bg-muted/60 p-3 text-sm leading-6 whitespace-pre-wrap">
-                  {event.detail}
-                </p>
+
+        {event.detail &&
+          (isModelStream ? (
+            <div
+              className={cn(
+                "mt-3 rounded-lg border bg-muted/25 px-4 py-3",
+                event.kind === "reasoning" &&
+                  "border-violet-500/20 bg-violet-500/5",
+                event.kind === "output" &&
+                  "border-indigo-500/20 bg-indigo-500/5"
               )}
-              {hasData && (
-                <dl className="mt-2 grid gap-2 rounded-md bg-muted/60 p-3 text-xs">
-                  {detailData.map(([key, value]) => (
-                    <div
-                      key={key}
-                      className="grid gap-1 sm:grid-cols-[9rem_1fr]"
-                    >
-                      <dt className="font-medium text-muted-foreground">
-                        {key.replaceAll("_", " ")}
-                      </dt>
-                      <dd className="min-w-0 break-words whitespace-pre-wrap">
-                        {Array.isArray(value) &&
-                        value.every((item) => typeof item !== "object")
-                          ? value.join(", ")
-                          : typeof value === "object"
-                            ? JSON.stringify(value, null, 2)
-                            : String(value)}
-                      </dd>
-                    </div>
-                  ))}
-                </dl>
-              )}
-            </CollapsibleContent>
-          </>
+            >
+              <div className="mb-2 flex items-center gap-2 text-xs font-medium text-muted-foreground">
+                <span
+                  className={cn(
+                    "size-1.5 rounded-full",
+                    event.kind === "reasoning"
+                      ? "bg-violet-500"
+                      : "bg-indigo-500",
+                    isActivelyStreaming &&
+                      "animate-pulse motion-reduce:animate-none"
+                  )}
+                  aria-hidden
+                />
+                <span>
+                  {event.kind === "reasoning"
+                    ? "Model analysis"
+                    : "Model response"}
+                </span>
+                {isActivelyStreaming && (
+                  <span className="font-normal">· streaming</span>
+                )}
+              </div>
+              <p className="max-w-[75ch] text-sm leading-6 break-words whitespace-pre-wrap text-foreground/90">
+                {event.detail}
+                {isActivelyStreaming && (
+                  <span
+                    className="ml-1 inline-block h-4 w-0.5 translate-y-0.5 animate-pulse bg-current motion-reduce:animate-none"
+                    aria-hidden
+                  />
+                )}
+              </p>
+            </div>
+          ) : event.kind === "tool_result" ? (
+            <pre className="mt-2 themed-scrollbar max-h-80 max-w-full overflow-auto rounded-md border bg-muted/35 p-3 font-mono text-xs leading-5 whitespace-pre-wrap text-muted-foreground">
+              {event.detail}
+            </pre>
+          ) : (
+            <p className="mt-1 max-w-[75ch] text-sm leading-6 break-words whitespace-pre-wrap text-muted-foreground">
+              {event.detail}
+            </p>
+          ))}
+
+        {detailData.length > 0 && (
+          <dl className="mt-3 grid gap-2 border-t pt-3 text-xs">
+            {detailData.map(([key, value]) => (
+              <div key={key} className="grid gap-1 sm:grid-cols-[9rem_1fr]">
+                <dt className="font-medium text-muted-foreground">
+                  {key.replaceAll("_", " ")}
+                </dt>
+                <dd className="min-w-0 font-mono leading-5 break-words whitespace-pre-wrap">
+                  {formatEventValue(value)}
+                </dd>
+              </div>
+            ))}
+          </dl>
         )}
-      </Collapsible>
+      </article>
     </li>
   )
 }
@@ -726,6 +779,9 @@ function AgentWorkspace({
               key={event.id}
               event={event}
               isLast={index === events.length - 1}
+              streaming={
+                running && !selected.complete && index === events.length - 1
+              }
             />
           ))}
         </ol>
@@ -925,7 +981,7 @@ export function ReviewSessionPage() {
   useEffect(() => {
     if (
       !following ||
-      !["agents", "pi"].includes(view) ||
+      !["agents", "pi", "all"].includes(view) ||
       session?.status !== "running"
     )
       return
@@ -1175,17 +1231,18 @@ export function ReviewSessionPage() {
                   aria-hidden
                 />
                 <p>
-                  The raw Pi stream: reasoning deltas, assistant output, tool
-                  calls and results, model submissions, and worker failures.
+                  Follow the model response as it is written, with repository
+                  tools and worker events kept in sequence around it.
                 </p>
               </div>
-              <ol aria-live="polite" aria-relevant="additions">
+              <ol aria-label="Pi model activity">
                 {piEvents.map((event, index) => (
                   <EventRow
                     key={event.id}
                     event={event}
                     isLast={index === piEvents.length - 1}
                     showAgent
+                    streaming={running && index === piEvents.length - 1}
                   />
                 ))}
               </ol>
@@ -1200,13 +1257,14 @@ export function ReviewSessionPage() {
                   every parallel agent.
                 </p>
               </div>
-              <ol aria-live="polite" aria-relevant="additions">
+              <ol aria-label="All review activity">
                 {allEvents.map((event, index) => (
                   <EventRow
                     key={event.id}
                     event={event}
                     isLast={index === allEvents.length - 1}
                     showAgent
+                    streaming={running && index === allEvents.length - 1}
                   />
                 ))}
               </ol>
@@ -1245,7 +1303,7 @@ export function ReviewSessionPage() {
         </aside>
       </div>
 
-      {running && !following && ["agents", "pi"].includes(view) && (
+      {running && !following && ["agents", "pi", "all"].includes(view) && (
         <Button
           type="button"
           className="fixed right-5 bottom-5 z-30 gap-2 rounded-full shadow-lg sm:right-7 sm:bottom-7"
