@@ -2,7 +2,7 @@ name: Promote Tested Sync Branch
 
 on:
   workflow_run:
-    workflows: ["Fork CI"]
+    workflows: ['Fork CI']
     types: [completed]
 
 permissions:
@@ -30,10 +30,10 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: "22"
+          node-version: '22'
 
       - name: Run patchlane promote
-        run: npx patchlane@0.5.2 promote
+        run: npx patchlane@0.5.3 promote
         env:
           GH_TOKEN: ${{ steps.patchlane-token.outputs.token }}
           EXPECTED_SYNC_SHA: ${{ github.event.workflow_run.head_sha }}

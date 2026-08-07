@@ -1,102 +1,103 @@
 ---
 name: patchlane-fork-setup
-description: Set up or migrate a GitHub fork to use Patchlane upstream sync automation. Use when a repository is adopting Patchlane, upgrading legacy workflow configuration, choosing an upstream source, creating patch branches, adding workflows, or bootstrapping the first tested sync.
+description: >-
+    Use when initializing Patchlane in an unconfigured fork or moving existing fork-only changes into initial patch lanes. Do not use for health checks, upgrades, broken sync repair, or ordinary feature work. Inspect first, obtain approval for the exact local and remote refs, preserve the base branch, build independent patch lanes, validate with doctor and sync --dry-run, and publish only approved patch refs.
 ---
 
 # Patchlane Fork Setup
 
-Inspect the fork before changing anything. Confirm the default branch, remotes, existing workflows, fork-only commits, and existing `patch/*` branches.
+Set up a fork as independent patch lanes without changing its existing base branch. Treat setup as a fragile migration: inventory first, approve one concrete mapping, execute in isolated worktrees, then validate the complete composition.
 
-Treat the promoted base branch as generated output. Keep fork-owned product changes, Patchlane configuration, agent skills, and workflows on focused patch branches.
+## 1. Inspect without mutation
 
-## Confirm the plan
+Before approval, use only read-only commands to determine:
 
-Ask the user which upstream source to track. Do not infer this from version files or from whichever branch is currently checked out.
+- the current branch and clean/dirty state;
+- `origin`, `upstream`, the upstream default branch, and their current SHAs;
+- commits and files present in the fork but absent from the selected upstream source;
+- existing `patch/*` refs;
+- every workflow filename, its YAML `name`, and its current triggers.
 
-- `release:latest` for the latest stable GitHub release
-- `release:prerelease` for the latest prerelease
-- `release:<regex>` for matching release tags
-- `branch:<ref>` for an upstream development branch
+Do not run `patchlane init`, create branches or worktrees, edit files, commit, push, reset, or change remotes during inspection. Do not ask the user to choose information they already supplied.
 
-Resolve and show the source tag or branch and commit SHA. Before pushing or rewriting branches, show the complete plan and get confirmation. Include the source, base branch, sync branch, ordered patch refs, existing CI workflow name, GitHub authentication approach, and any force-pushes required.
+## 2. Present one complete plan
 
-## Configure GitHub authentication
+Map each fork-owned file to a focused lane and name every ref that will be created and published. For the standard initial layout:
 
-Treat working workflow authentication as a setup prerequisite. The token must be able to push repository contents, update workflow files, and start downstream workflows. Enable issue access when GitHub issue notifications are configured. The built-in `GITHUB_TOKEN` is not sufficient because GitHub suppresses most workflow events caused by it.
+1. `patch/sync`: `.patchlane.yml`, generated Patchlane workflows, and installed Patchlane agent skills.
+2. `patch/ci`: only the existing CI workflow adjustment needed to test the generated sync branch.
+3. `patch/<product>`: the existing fork customization and product behavior.
 
-Inspect existing workflows and available repository secret and variable names. Show what authentication is already established, then ask the user to choose an approach; do not silently select an identity or credential source:
+Create every lane independently from the same resolved upstream source; patch lanes are not a branch stack. Use this default configuration when tracking `upstream/main`:
 
-1. Use Patchlane's generated `actions/create-github-app-token` setup.
-2. Preserve an existing token source and its inputs, output name, and secret names.
-3. Use another action or `run` step selected by the user to produce a token output.
-4. Use an Actions secret containing a suitable GitHub App or user token.
+```yaml
+version: 1
+upstream: OWNER/REPOSITORY
+source: branch:main
+baseBranch: main
+syncBranch: sync/integration
+patchRefs:
+    - patch/sync
+    - patch/ci
+    - patch/product
+ciWorkflow: CI
+allowedWorkflows:
+    - ci.yml
+```
 
-For the generated setup, use repository variable `PATCHLANE_APP_CLIENT_ID` and repository secret `PATCHLANE_APP_PRIVATE_KEY`. Require the App installation to grant Contents read/write and Workflows write, plus Issues read/write when notifications are enabled. Actions write is not required.
+Use the existing CI workflow's YAML `name`, not its filename, for `ciWorkflow`. Keep the exact existing base ref unchanged. Never invent a replacement base branch.
 
-For another source, do not require the standard variable or secret names. A producing step must have an `id` and expose `${{ steps.<id>.outputs.<name> }}`; a stored token must use `${{ secrets.<name> }}`. Checkout and every `patchlane sync`, `promote`, or `notify` command in the job must consume the exact same expression. Do not use compound expressions, environment indirection, `github.token`, or `secrets.GITHUB_TOKEN`. Explain that Doctor can validate custom token wiring but not how the token is minted or which capabilities it has. Confirm write access and downstream workflow triggering with the first workflow-driven published sync, including its downstream CI run and promotion.
+Ask for explicit approval to create the named local refs, make the mapped commits, and publish the named patch refs to the stated remote. Publishing a generated base or sync branch is not implied. If the plan changes, request approval again.
 
-Credential creation, permission approval, App installation, and private-key generation require the user. Never ask them to paste a token or private key into chat or print one. After explicit approval, the agent may configure repository variables and secrets from local files. Check deterministically where possible:
+## 3. Execute the approved mapping
 
-- `gh auth status`
-- `gh api repos/OWNER/REPO/actions/permissions`
-- the metadata for variables and secrets used by the selected approach
+After approval, follow this order:
 
-Secret metadata proves only that a secret exists. Include all external repository changes in the plan and obtain confirmation before setting variables, secrets, or dispatching workflows.
+1. Record the original base SHA, source SHA, and fork-only file list.
+2. Create a temporary worktree for each approved patch lane, each based directly on the source SHA. Keep the original worktree on its original branch.
+3. In the `patch/sync` worktree, run `npx patchlane init` with every important value explicit:
 
-## Configure the fork
+    ```bash
+    npx patchlane init \
+      --upstream=OWNER/REPOSITORY \
+      --source=branch:main \
+      --base-branch=main \
+      --sync-branch=sync/integration \
+      --patch-refs=patch/sync,patch/ci,patch/product \
+      --ci-workflow=CI \
+      --allowed-workflows=ci.yml
+    npx patchlane agents --dir .agents/skills
+    ```
 
-1. Default the generated base to `main` and the integration branch to `sync/integration` unless the repository uses different conventions.
-2. Create each patch branch independently from the resolved upstream source. Never create `patch/sync` from `patch/product`, or another patch branch, unless that dependency is intentional and explicitly allowed.
-3. Prefer the order `patch/sync`, `patch/ci`, then product-specific patches. Foundational changes must precede patches that depend on them.
-4. Put `.patchlane.yml`, Patchlane workflows, and installed `.agents/skills` on `patch/sync`.
-5. Put only the existing CI trigger adjustment on `patch/ci`. Preserve the existing workflow's `name`; configure `ciWorkflow` and the promotion workflow to reference that exact name. Add the CI filename and every other intentionally retained repository workflow to `allowedWorkflows`; Patchlane adds its generated sync and promotion workflows implicitly.
-6. Use `npx patchlane init` to generate `.patchlane.yml` and pinned workflow files when practical, then adapt rather than replace existing repository conventions. Preserve the user's selected authentication source, authenticated checkout, and matching `GH_TOKEN` wiring. For the generated GitHub App source, also preserve its explicit permission requests.
-7. Ensure fork CI covers normal pull requests plus pushes to both the generated base and sync branches.
+    Derive `OWNER/REPOSITORY` from the real upstream repository. A filesystem-only test mirror has no GitHub identity; use the harness-provided repository identity while leaving its remote URL unchanged.
 
-Use the bundled assets as invariants when adapting workflows:
+4. In the `patch/ci` worktree, restore the original CI workflow and change only its trigger. Preserve its name and jobs, and cover normal pull requests plus pushes to both `main` and `sync/integration`.
+5. In the product-lane worktree, restore only the mapped fork-owned product files from the recorded original base SHA.
+6. Inspect each staged diff before committing. Verify that no lane contains another lane's files and that every lane is based directly on the source SHA.
+7. Publish all and only the patch refs named in the approved plan. Never push `main`, the configured base, or `sync/integration`.
 
-- `assets/sync-upstream.yml` exposes safe workflow-dispatch overrides and runs sync with write permission.
-- `assets/fork-ci.yml` demonstrates the required branch triggers.
-- `assets/promote-tested-sync.yml` promotes only a successful sync-branch `workflow_run` and passes its exact `head_sha`.
+Use Patchlane's generated GitHub App wiring unless the user selected an existing token source. Do not create credentials, set repository variables or secrets, or dispatch workflows unless those external mutations were explicitly included in the approved plan. Never request secret values in chat.
 
-## Migrate an existing Patchlane fork
+## 4. Validate from `patch/sync`
 
-Before planning an upgrade, fetch and read the current migration guide from:
+Validation must use the worktree whose checked-out commit contains `.patchlane.yml`, not the unchanged base worktree:
 
-`https://raw.githubusercontent.com/adampoit/patchlane/main/docs/migrations.md`
+```bash
+npx patchlane doctor
+npx patchlane sync --dry-run
+```
 
-Use the section for the target version, including `vNext` for an unreleased upgrade. Fetch this file dynamically instead of relying on migration details bundled with the installed skill.
+Run both commands after all configured patch refs exist on `origin`, because Doctor verifies those refs. Fix errors and rerun both commands until they succeed; report warnings separately. A dry run must not create or publish `sync/integration`.
 
-If Patchlane workflows or patch branches already exist, migrate incrementally instead of treating the repository as a new installation.
+Do not substitute `bootstrap`, `sync --skip-push`, `status`, or help output for the required sync dry run. Run `bootstrap` only when publishing the initial generated sync was separately requested and approved.
 
-1. Preserve the configured source behavior, branch names, patch order, CI workflow name, schedule, and repository-specific workflow changes unless the user approves changing them.
-2. Follow the fetched guide to update `.patchlane.yml` and inventory the intended composed workflow set.
-3. Add the config and adapted workflows to the existing `patch/sync` branch. Do not use `patchlane init --force` unless replacing those workflows is intentional.
-4. Run `doctor` and `sync --dry-run`, then show the migration plan before pushing rewritten patch branches.
-5. Roll the migration forward through the tested sync flow described by the fetched guide.
+Finally remove temporary worktrees, return to the original worktree, and verify:
 
-## Validate and bootstrap
+- local and remote base SHAs equal their recorded values;
+- `sync/integration` is absent from the remote;
+- exactly the approved patch refs are present remotely;
+- `patchRefs` has the approved order;
+- the composed tree preserves the original CI and fork customization;
+- the original worktree is clean and remotes are unchanged.
 
-Run `npx patchlane doctor` after creating and pushing the patch branches. Fix all errors and review warnings.
-
-Use `npx patchlane sync --dry-run` for local validation. Do not use local `--no-push` as a substitute: no-push creates or resets the local sync branch, while dry-run leaves the working tree alone.
-
-The workflows do not exist on the default branch before the first promotion. Bootstrap explicitly:
-
-1. Run `npx patchlane bootstrap` to validate without publishing.
-2. After user approval, run `npx patchlane bootstrap --publish` and wait for the configured CI workflow.
-3. Promote the exact successful SHA printed by bootstrap, or use `npx patchlane bootstrap --wait` to wait and promote automatically.
-4. Confirm the generated base is rooted at the selected source.
-5. On the first workflow-driven sync that publishes a new integration SHA, confirm authentication succeeds, CI runs as a `push` for that exact SHA, and promotion moves the base branch to that SHA.
-
-## Finish
-
-Summarize:
-
-- selected source and resolved tag/branch SHA
-- base and sync branches
-- ordered patch refs and their bases
-- files and workflows added or updated
-- doctor and dry-run results
-- bootstrap CI and promotion results
-- selected authentication approach, relevant credential metadata, and first workflow-driven sync results
+Summarize the source SHA, lane mapping and SHAs, published refspecs, Doctor result, dry-run result, warnings, and unchanged refs.

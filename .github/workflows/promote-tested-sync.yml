@@ -30,7 +30,7 @@ jobs:
           node-version: "22"
 
       - name: Run patchlane promote
-        run: npx patchlane@0.5.2 promote
+        run: npx patchlane@0.5.3 promote
         env:
           GH_TOKEN: ${{ steps.not-adam.outputs.token }}
           EXPECTED_SYNC_SHA: ${{ github.event.workflow_run.head_sha }}
