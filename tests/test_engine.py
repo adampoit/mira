@@ -2048,3 +2048,108 @@ class TestRestrictDiffToPaths:
         out = _restrict_diff_to_paths(_TWO_FILE_DIFF, {"src/a.py"})
         patch_set = parse_diff(out)
         assert [f.path for f in patch_set.files] == ["src/a.py"]
+
+
+class TestAgenticToolsOnIndexedRepos:
+    """Agentic tools should be available on indexed repos when enabled."""
+
+    def _make_provider(self) -> MagicMock:
+        from mira.models import PRInfo
+
+        mock_provider = MagicMock()
+        mock_provider.get_pr_info = AsyncMock(
+            return_value=PRInfo(
+                title="t",
+                description="",
+                base_branch="main",
+                head_branch="f",
+                url="https://github.com/test/repo/pull/1",
+                number=1,
+                owner="test",
+                repo="repo",
+            )
+        )
+        mock_provider.get_pr_diff = AsyncMock(return_value=_TWO_FILE_DIFF)
+        mock_provider.get_repo_tree = AsyncMock(return_value=["src/a.py", "src/b.py"])
+        mock_provider.get_unresolved_bot_threads = AsyncMock(return_value=[])
+        mock_provider.find_bot_comment = AsyncMock(return_value=None)
+        mock_provider.post_comment = AsyncMock()
+        mock_provider.update_comment = AsyncMock()
+        mock_provider.resolve_outdated_review_threads = AsyncMock(return_value=0)
+        return mock_provider
+
+    @pytest.mark.asyncio
+    async def test_fetcher_set_on_indexed_repo_with_agentic_tools(
+        self, monkeypatch, tmp_path
+    ):
+        """When agentic_tools=True and index has data, _agentic_source_fetcher
+        is set so the reviewer can use read_file/grep_repo."""
+        from unittest.mock import MagicMock
+
+        from mira.config import MiraConfig
+        from mira.core.engine import ReviewEngine
+        from mira.index.store import FileSummary, IndexStore
+
+        monkeypatch.setenv("MIRA_INDEX_DIR", str(tmp_path))
+
+        store = IndexStore.open("test", "repo")
+        store.upsert_summary(
+            FileSummary(path="src/a.py", language="python", summary="Module a", content_hash="h")
+        )
+        store.close()
+
+        config = MiraConfig()
+        config.review.agentic_tools = True
+        config.review.code_context = True
+        config.review.security_pass = False
+        config.review.self_critique = False
+
+        mock_llm = MagicMock()
+        mock_llm.review = AsyncMock(return_value="{}")
+        mock_llm.count_tokens = MagicMock(return_value=100)
+        mock_llm.usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+
+        engine = ReviewEngine(
+            config=config, llm=mock_llm, provider=self._make_provider()
+        )
+        await engine.review_pr("https://github.com/test/repo/pull/1")
+
+        assert engine._agentic_source_fetcher is not None
+
+    @pytest.mark.asyncio
+    async def test_fetcher_not_set_when_agentic_tools_disabled(
+        self, monkeypatch, tmp_path
+    ):
+        """When agentic_tools=False, _agentic_source_fetcher stays None even
+        on indexed repos."""
+        from unittest.mock import MagicMock
+
+        from mira.config import MiraConfig
+        from mira.core.engine import ReviewEngine
+        from mira.index.store import FileSummary, IndexStore
+
+        monkeypatch.setenv("MIRA_INDEX_DIR", str(tmp_path))
+
+        store = IndexStore.open("test", "repo")
+        store.upsert_summary(
+            FileSummary(path="src/a.py", language="python", summary="Module a", content_hash="h")
+        )
+        store.close()
+
+        config = MiraConfig()
+        config.review.agentic_tools = False
+        config.review.code_context = True
+        config.review.security_pass = False
+        config.review.self_critique = False
+
+        mock_llm = MagicMock()
+        mock_llm.review = AsyncMock(return_value="{}")
+        mock_llm.count_tokens = MagicMock(return_value=100)
+        mock_llm.usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+
+        engine = ReviewEngine(
+            config=config, llm=mock_llm, provider=self._make_provider()
+        )
+        await engine.review_pr("https://github.com/test/repo/pull/1")
+
+        assert engine._agentic_source_fetcher is None

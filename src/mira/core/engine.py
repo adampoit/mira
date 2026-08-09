@@ -1065,28 +1065,29 @@ class ReviewEngine:
                     index_has_data_for_changed = bool(store.get_summaries(changed_paths))
                     self._jit_needed = not index_has_data_for_changed
                     self._index_was_empty = not bool(store.all_paths())
+
+                    # Hoisted: agentic fetcher/tree setup runs whenever a source fetcher exists
+                    # (indexed or not), so the reviewer tools are available on indexed repos too.
+                    tree_paths: set[str] | None = None
+                    if source_fetcher is not None and (
+                        self.config.review.agentic_tools or not index_has_data_for_changed
+                    ):
+                        self._agentic_source_fetcher = source_fetcher
+                        if hasattr(self.provider, "get_repo_tree"):
+                            try:
+                                tree_paths = set(
+                                    await self.provider.get_repo_tree(pr_info, pr_info.head_branch)
+                                )
+                            except Exception as exc:
+                                logger.debug("Repo tree fetch failed: %s", exc)
+                        self._agentic_repo_tree = sorted(tree_paths) if tree_paths else []
+
                     if not index_has_data_for_changed and source_fetcher is not None:
                         try:
                             from mira.index.jit_context import (
                                 build_jit_cross_file_context,
                             )
 
-                            tree_paths: set[str] | None = None
-                            if hasattr(self.provider, "get_repo_tree"):
-                                try:
-                                    tree_paths = set(
-                                        await self.provider.get_repo_tree(
-                                            pr_info,
-                                            pr_info.head_branch,
-                                        )
-                                    )
-                                except Exception as exc:
-                                    logger.debug(
-                                        "JIT: tree fetch failed: %s",
-                                        exc,
-                                    )
-                            self._agentic_source_fetcher = source_fetcher
-                            self._agentic_repo_tree = sorted(tree_paths) if tree_paths else []
                             jit = await build_jit_cross_file_context(
                                 changed_files=filtered,
                                 source_fetcher=source_fetcher,
@@ -1257,7 +1258,6 @@ class ReviewEngine:
                     raw_response = ""
                     use_agentic = (
                         self.config.review.agentic_tools
-                        and getattr(self, "_jit_needed", False)
                         and self._agentic_source_fetcher is not None
                     )
                     if use_agentic:

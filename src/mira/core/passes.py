@@ -49,7 +49,7 @@ async def agentic_review_loop(
     if convo and convo[0].get("role") == "system":
         convo[0]["content"] = (
             convo[0]["content"] + "\n\n## Tools\n\n"
-            "This repo isn't indexed, so you have two helpers for "
+            "You have two helpers for "
             "cross-file checks: `read_file(path)` and "
             "`grep_repo(pattern, path_glob?, path_only?)`. Use them when, "
             "and ONLY when, you need to verify a cross-file claim before "
