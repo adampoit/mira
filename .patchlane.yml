@@ -8,6 +8,7 @@ patchRefs:
   - patch/github-check-runs
   - patch/pi-agent-backend
   - patch/review-traces
+  - patch/indexing-reliability
   - patch/review-queue
   - patch/sync
   - patch/ci
