@@ -10,6 +10,7 @@ from mira.models import (
     BotThreadRecord,
     FileHistoryEntry,
     HumanReviewComment,
+    OpenPRRef,
     PRInfo,
     ReviewResult,
     UnresolvedThread,
@@ -101,6 +102,10 @@ class BaseProvider(abc.ABC):
     async def get_compare_diff(self, pr_info: PRInfo, base_sha: str, head_sha: str) -> str:
         """Diff between two commits, for incremental (round 2+) reviews."""
         return ""
+
+    async def list_open_prs(self, owner: str, repo: str, limit: int = 20) -> list[OpenPRRef]:
+        """Other open pull requests in the repository, for overlap detection."""
+        return []
 
     async def get_all_bot_threads(
         self, pr_info: PRInfo, bot_login: str | None = None

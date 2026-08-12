@@ -11,6 +11,7 @@ import pytest
 
 from mira.config import MiraConfig
 from mira.index.indexer import (
+    IndexingError,
     _build_file_summary,
     _content_hash,
     _parse_summarize_response,
@@ -217,27 +218,30 @@ class TestIndexRepo:
 
         mock_llm = AsyncMock()
         mock_llm.complete_with_tools = AsyncMock(
-            return_value=json.dumps(
-                {
-                    "files": [
-                        {
-                            "path": "src/main.py",
-                            "language": "python",
-                            "summary": "Main entry point.",
-                            "symbols": [
-                                {
-                                    "name": "main",
-                                    "kind": "function",
-                                    "signature": "def main()",
-                                    "description": "Entry",
-                                }
-                            ],
-                            "imports": [],
-                            "symbol_references": [],
-                        },
-                    ],
-                }
-            )
+            side_effect=[
+                json.dumps(
+                    {
+                        "files": [
+                            {
+                                "path": "src/main.py",
+                                "language": "python",
+                                "summary": "Main entry point.",
+                                "symbols": [
+                                    {
+                                        "name": "main",
+                                        "kind": "function",
+                                        "signature": "def main()",
+                                        "description": "Entry",
+                                    }
+                                ],
+                                "imports": [],
+                                "symbol_references": [],
+                            },
+                        ],
+                    }
+                ),
+                json.dumps({"directories": [{"path": "src", "summary": "Application source."}]}),
+            ]
         )
 
         # Content needs to exceed the trivial-file threshold so it routes
@@ -265,6 +269,52 @@ class TestIndexRepo:
         calls = mock_llm.complete_with_tools.await_args_list
         assert calls[0].kwargs["tools"] == [SUBMIT_FILE_SUMMARIES_TOOL]
         assert calls[1].kwargs["tools"] == [SUBMIT_DIRECTORY_SUMMARIES_TOOL]
+        store.close()
+
+    async def test_model_failure_aborts_indexing(self, tmp_path):
+        """An unavailable model must fail the job instead of producing an empty index."""
+        store = IndexStore(str(tmp_path / "test.db"))
+        mock_llm = AsyncMock()
+        mock_llm.config.model = "unavailable-model"
+        mock_llm.complete_with_tools = AsyncMock(side_effect=RuntimeError("model unavailable"))
+        content = "print('hello')\n" * 100
+        fetcher = _FakeFetcher(tree=["src/main.py"], tarball={"src/main.py": content})
+
+        with pytest.raises(IndexingError, match="model unavailable"):
+            await index_repo(
+                owner="test",
+                repo="repo",
+                config=MiraConfig(),
+                store=store,
+                llm=mock_llm,
+                full=True,
+                fetcher=fetcher,
+            )
+
+        assert store.get_summary("src/main.py") is None
+        store.close()
+
+    async def test_missing_model_summaries_abort_indexing(self, tmp_path):
+        """A successful API call without complete output must not mark a partial index ready."""
+        store = IndexStore(str(tmp_path / "test.db"))
+        mock_llm = AsyncMock()
+        mock_llm.config.model = "test-model"
+        mock_llm.complete_with_tools = AsyncMock(return_value='{"files": []}')
+        content = "print('hello')\n" * 100
+        fetcher = _FakeFetcher(tree=["src/main.py"], tarball={"src/main.py": content})
+
+        with pytest.raises(IndexingError, match="omitted summaries"):
+            await index_repo(
+                owner="test",
+                repo="repo",
+                config=MiraConfig(),
+                store=store,
+                llm=mock_llm,
+                full=True,
+                fetcher=fetcher,
+            )
+
+        assert store.get_summary("src/main.py") is None
         store.close()
 
     async def test_skips_files_over_size_limit(self, tmp_path):
@@ -301,20 +351,23 @@ class TestIndexDiff:
 
         mock_llm = AsyncMock()
         mock_llm.complete_with_tools = AsyncMock(
-            return_value=json.dumps(
-                {
-                    "files": [
-                        {
-                            "path": "src/utils.py",
-                            "language": "python",
-                            "summary": "Utility functions.",
-                            "symbols": [],
-                            "imports": [],
-                            "symbol_references": [],
-                        },
-                    ],
-                }
-            )
+            side_effect=[
+                json.dumps(
+                    {
+                        "files": [
+                            {
+                                "path": "src/utils.py",
+                                "language": "python",
+                                "summary": "Utility functions.",
+                                "symbols": [],
+                                "imports": [],
+                                "symbol_references": [],
+                            },
+                        ],
+                    }
+                ),
+                json.dumps({"summary": "Shared utility functions."}),
+            ]
         )
 
         count = await index_diff(

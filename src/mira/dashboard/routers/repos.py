@@ -1,3 +1,5 @@
+# pyright: standard
+
 """Dashboard repos routes"""
 
 from __future__ import annotations
@@ -5,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import os
 from datetime import UTC, datetime
+from typing import cast
 
 from fastapi import HTTPException, Request
 from fastapi import Response as FastAPIResponse
@@ -83,7 +86,8 @@ async def sync_repos(request: Request) -> dict:
         installations = await auth.list_installations()
         installations_reachable = True
         for inst in installations:
-            inst_id = int(inst.get("id", 0))
+            raw_inst_id = inst.get("id", 0)
+            inst_id = int(raw_inst_id) if isinstance(raw_inst_id, (int, str)) else 0
             if not inst_id:
                 continue
             try:
@@ -179,6 +183,8 @@ def get_repo_detail(owner: str, repo: str) -> RepoDetail:
             imports_count=total_imports,
             external_refs_count=total_external_refs,
             lines_count=total_loc,
+            status=repo_record.status if repo_record else "pending",
+            error=repo_record.error if repo_record else "",
             last_indexed=last_indexed,
         )
 
@@ -440,7 +446,7 @@ def get_packages(owner: str, repo: str) -> list[PackageModel]:
 
 @router.post("/api/repos/{owner}/{repo}/index")
 async def trigger_index(owner: str, repo: str, request: Request, full: bool = False) -> dict:
-    """Trigger indexing for a repo. full=true wipes and re-indexes everything."""
+    """Trigger indexing for a repo. full=true re-indexes every eligible file."""
     _require_admin(request)
     from mira.index.status import tracker
 
@@ -455,7 +461,11 @@ async def trigger_index(owner: str, repo: str, request: Request, full: bool = Fa
     records = _api._app_db.get_repo_any_platform(owner, repo)
     # Same owner/repo can exist on multiple platforms; prefer
     # github → gitlab → forgejo (the historical fallback order).
-    platform = _pick_platform_record(records).platform if records else "github"
+    repo_record = _pick_platform_record(records) if records else None
+    platform = repo_record.platform if repo_record else "github"
+    previous_status = repo_record.status if repo_record else "pending"
+    previous_error = repo_record.error if repo_record else ""
+    previous_files_indexed = repo_record.files_indexed if repo_record else 0
 
     from mira.platforms.fetch import EmptyRepoError, make_fetcher
 
@@ -479,7 +489,8 @@ async def trigger_index(owner: str, repo: str, request: Request, full: bool = Fa
                     auth = GitHubAppAuth(app_id=app_id, private_key=private_key)
                     installations = await auth.list_installations()
                     for inst in installations:
-                        inst_id = int(inst.get("id", 0))
+                        raw_inst_id = inst.get("id", 0)
+                        inst_id = int(raw_inst_id) if isinstance(raw_inst_id, (int, str)) else 0
                         if inst_id:
                             repos = await auth.list_installation_repos(inst_id)
                             if any(r.get("full_name") == full_name for r in repos):
@@ -509,16 +520,19 @@ async def trigger_index(owner: str, repo: str, request: Request, full: bool = Fa
             from mira.dashboard.models_config import llm_config_for
 
             tracker.start(full_name)
+            _api._app_db.set_repo_status(
+                owner,
+                repo,
+                "indexing",
+                files_indexed=previous_files_indexed,
+                platform=platform,
+            )
             config = load_config()
             # Use the configured indexing model — without this swap we'd
             # silently fall back to the review model, which is slower and
             # more expensive per token.
             llm = create_llm(llm_config_for("indexing", config.llm))
-            store = IndexStore.open(owner, repo, platform=platform)
-            if full:
-                # Wipe existing index
-                for path in list(store.all_paths()):
-                    store.remove_paths([path])
+            store = cast(IndexStore, IndexStore.open(owner, repo, platform=platform))
             count = await index_repo(
                 owner=owner,
                 repo=repo,
@@ -551,6 +565,16 @@ async def trigger_index(owner: str, repo: str, request: Request, full: bool = Fa
             await dispatch_event(INDEXING_COMPLETED, {"repo": full_name, "files_indexed": count})
         except IndexingCancelled as cancelled:
             tracker.cancel(full_name, cancelled.files_indexed)
+            restored_status = "pending" if previous_status == "indexing" else previous_status
+            current_files = len(store.all_paths()) if store is not None else previous_files_indexed
+            _api._app_db.set_repo_status(
+                owner,
+                repo,
+                restored_status,
+                files_indexed=current_files,
+                error=previous_error,
+                platform=platform,
+            )
             logger.info(
                 "Indexing cancelled for %s after %d files", full_name, cancelled.files_indexed
             )
@@ -559,7 +583,17 @@ async def trigger_index(owner: str, repo: str, request: Request, full: bool = Fa
             tracker.complete(full_name, 0)
             logger.info("Index skipped for %s — empty repository", full_name)
         except Exception as exc:
-            tracker.fail(full_name, str(exc))
+            error = str(exc) or type(exc).__name__
+            tracker.fail(full_name, error)
+            current_files = len(store.all_paths()) if store is not None else previous_files_indexed
+            _api._app_db.set_repo_status(
+                owner,
+                repo,
+                "failed",
+                files_indexed=current_files,
+                error=error,
+                platform=platform,
+            )
             logger.exception("Indexing failed for %s", full_name)
         finally:
             if store is not None:
