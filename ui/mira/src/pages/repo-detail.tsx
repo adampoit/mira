@@ -1,4 +1,5 @@
 import {
+  AlertCircle,
   ArrowLeft,
   BookOpen,
   Loader2,
@@ -50,18 +51,15 @@ export function RepoDetailPage() {
 
   const { data, loading, error } = useAsync(
     () => api.getRepo(owner!, repo!),
-    [owner, repo],
+    [owner, repo]
   )
   const { data: packages } = useAsync(
     () => api.getPackages(owner!, repo!),
-    [owner, repo],
+    [owner, repo]
   )
   const { data: vulns } = useAsync(
-    () =>
-      api
-        .getRepoVulnerabilities(owner!, repo!)
-        .catch(() => [] as never),
-    [owner, repo],
+    () => api.getRepoVulnerabilities(owner!, repo!).catch(() => [] as never),
+    [owner, repo]
   )
   const [contextEntries, setContextEntries] = useState<ReviewContextModel[]>([])
   const [contextLoaded, setContextLoaded] = useState(false)
@@ -86,17 +84,17 @@ export function RepoDetailPage() {
         repo,
         editingCtx.id,
         editingCtx.title,
-        editingCtx.content,
+        editingCtx.content
       )
       setContextEntries((prev) =>
-        prev.map((e) => (e.id === updated.id ? updated : e)),
+        prev.map((e) => (e.id === updated.id ? updated : e))
       )
     } else {
       const created = await api.createContext(
         owner,
         repo,
         editingCtx.title,
-        editingCtx.content,
+        editingCtx.content
       )
       setContextEntries((prev) => [...prev, created])
     }
@@ -111,6 +109,8 @@ export function RepoDetailPage() {
 
   const [indexing, setIndexing] = useState(false)
   const [indexStatus, setIndexStatus] = useState("")
+  const [indexError, setIndexError] = useState("")
+  const [cancelling, setCancelling] = useState(false)
 
   // Poll indexing status continuously so the UI reflects jobs started from
   // anywhere (this page, the setup modal, a webhook-driven backfill, etc.).
@@ -124,23 +124,32 @@ export function RepoDetailPage() {
         if (cancelled) return
         if (job && job.status === "indexing") {
           setIndexing(true)
+          setIndexError("")
           setIndexStatus(
             job.files_done > 0
               ? `Indexing... ${job.files_done} files processed`
-              : "Indexing...",
+              : "Indexing..."
           )
         } else if (job && job.status === "completed") {
+          setIndexError("")
           setIndexStatus(`Done — ${job.files_done} files indexed`)
+          setCancelling(false)
           if (indexing) {
             setIndexing(false)
             setTimeout(() => window.location.reload(), 1000)
           }
         } else if (job && job.status === "failed") {
-          setIndexStatus(`Failed: ${job.error}`)
+          setIndexError(job.error || "Indexing stopped before completion.")
+          setIndexStatus("")
           setIndexing(false)
+          setCancelling(false)
         } else if (job && job.status === "cancelled") {
-          setIndexStatus(`Cancelled — ${job.files_done} files indexed before stopping`)
+          setIndexError("")
+          setIndexStatus(
+            `Cancelled — ${job.files_done} files indexed before stopping`
+          )
           setIndexing(false)
+          setCancelling(false)
         }
       } catch {
         // ignore
@@ -158,16 +167,23 @@ export function RepoDetailPage() {
   const triggerIndex = async (full: boolean) => {
     if (!owner || !repo) return
     setIndexing(true)
-    setIndexStatus(full ? "Starting full re-index..." : "Starting index update...")
+    setIndexError("")
+    setIndexStatus(
+      full ? "Starting full re-index..." : "Starting index update..."
+    )
     try {
       await api.triggerIndex(owner, repo, full)
-    } catch {
-      setIndexStatus("Failed to start indexing")
+    } catch (requestError) {
+      setIndexError(
+        requestError instanceof Error
+          ? requestError.message
+          : "Indexing could not be started."
+      )
+      setIndexStatus("")
       setIndexing(false)
+      setCancelling(false)
     }
   }
-
-  const [cancelling, setCancelling] = useState(false)
 
   const cancelIndex = async () => {
     if (!owner || !repo) return
@@ -181,10 +197,6 @@ export function RepoDetailPage() {
     }
   }
 
-  useEffect(() => {
-    if (!indexing) setCancelling(false)
-  }, [indexing])
-
   if (loading) {
     return <div className="p-6 text-sm text-muted-foreground">Loading...</div>
   }
@@ -192,6 +204,12 @@ export function RepoDetailPage() {
     return <div className="p-6 text-sm text-destructive">{error}</div>
   }
   if (!data) return null
+
+  const visibleIndexError =
+    indexError ||
+    (!indexStatus && data.status === "failed"
+      ? data.error || "Indexing stopped before completion."
+      : "")
 
   return (
     <div className="space-y-6 p-6">
@@ -249,12 +267,48 @@ export function RepoDetailPage() {
         </div>
       </div>
 
-      {/* Indexing status */}
+      {visibleIndexError && (
+        <section
+          role="alert"
+          aria-labelledby="indexing-error-title"
+          className="rounded-lg border border-destructive/30 bg-destructive/5 p-4"
+        >
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+            <div className="flex min-w-0 items-start gap-3">
+              <span className="flex size-9 shrink-0 items-center justify-center rounded-full bg-destructive/10 text-destructive">
+                <AlertCircle className="size-4" aria-hidden />
+              </span>
+              <div className="min-w-0">
+                <h2 id="indexing-error-title" className="text-sm font-semibold">
+                  Repository indexing failed
+                </h2>
+                <p className="mt-1 text-sm text-muted-foreground">
+                  Reviews may not have complete cross-file context until this is
+                  resolved.
+                </p>
+                <p className="mt-3 max-w-4xl text-sm leading-6 break-words whitespace-pre-wrap text-destructive">
+                  {visibleIndexError}
+                </p>
+              </div>
+            </div>
+            <Button
+              size="sm"
+              variant="outline"
+              className="shrink-0"
+              onClick={() => triggerIndex(false)}
+            >
+              <RefreshCw className="size-3.5" />
+              Retry indexing
+            </Button>
+          </div>
+        </section>
+      )}
+
       {indexStatus && (
         <Card className={indexing ? "border-primary/30 bg-primary/5" : ""}>
           <CardContent className="flex items-center gap-3 p-4">
             {indexing && (
-              <Loader2 className="h-4 w-4 animate-spin text-primary" />
+              <Loader2 className="h-4 w-4 animate-spin text-primary motion-reduce:animate-none" />
             )}
             <p className="text-sm font-medium">{indexStatus}</p>
           </CardContent>
@@ -330,14 +384,14 @@ export function RepoDetailPage() {
                       </AvatarFallback>
                     </Avatar>
                     <div className="ml-4 min-w-0 flex-1 space-y-1">
-                      <p className="text-sm font-medium leading-none">
+                      <p className="text-sm leading-none font-medium">
                         {f.path}
                       </p>
                       <p className="text-sm text-muted-foreground">
                         {f.summary}
                       </p>
                     </div>
-                    <div className="ml-4 whitespace-nowrap text-sm text-muted-foreground tabular-nums">
+                    <div className="ml-4 text-sm whitespace-nowrap text-muted-foreground tabular-nums">
                       {f.loc ?? 0} lines
                     </div>
                   </div>
@@ -360,8 +414,8 @@ export function RepoDetailPage() {
                     </Badge>
                   </div>
                   <CardDescription>
-                    Docs, guidelines, and API contracts injected into PR
-                    reviews for this repo
+                    Docs, guidelines, and API contracts injected into PR reviews
+                    for this repo
                   </CardDescription>
                 </div>
                 <Button
@@ -418,10 +472,10 @@ export function RepoDetailPage() {
                         </AvatarFallback>
                       </Avatar>
                       <div className="ml-4 min-w-0 flex-1 space-y-1">
-                        <p className="text-sm font-medium leading-none">
+                        <p className="text-sm leading-none font-medium">
                           {entry.title}
                         </p>
-                        <pre className="whitespace-pre-wrap text-sm text-muted-foreground">
+                        <pre className="text-sm whitespace-pre-wrap text-muted-foreground">
                           {entry.content.slice(0, 200)}
                           {entry.content.length > 200 && "..."}
                         </pre>
@@ -455,8 +509,8 @@ export function RepoDetailPage() {
                 </div>
               ) : !editingCtx ? (
                 <p className="text-sm text-muted-foreground">
-                  No context yet. Add architecture docs or coding guidelines
-                  to improve review quality on this repo.
+                  No context yet. Add architecture docs or coding guidelines to
+                  improve review quality on this repo.
                 </p>
               ) : null}
             </CardContent>
@@ -505,7 +559,7 @@ export function RepoDetailPage() {
 function BlastRadiusList({ owner, repo }: { owner: string; repo: string }) {
   const { data, loading } = useAsync(
     () => api.getBlastRadius(owner, repo),
-    [owner, repo],
+    [owner, repo]
   )
 
   if (loading) {
@@ -541,7 +595,8 @@ function BlastRadiusList({ owner, repo }: { owner: string; repo: string }) {
                   {entry.repo}
                 </Link>
                 <p className="text-xs text-muted-foreground">
-                  {entry.files.length} reference{entry.files.length !== 1 ? "s" : ""}
+                  {entry.files.length} reference
+                  {entry.files.length !== 1 ? "s" : ""}
                 </p>
               </div>
             )

@@ -1,3 +1,5 @@
+# pyright: standard, reportUnusedImport=false, reportUnusedFunction=false, reportUnusedParameter=false
+
 """FastAPI dashboard API for the Mira UI."""
 
 from __future__ import annotations
@@ -8,13 +10,14 @@ import os
 from collections.abc import Generator
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
+from typing import cast
 
 from fastapi import APIRouter, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from mira.dashboard.auth import AuthMiddleware, create_auth_router
-from mira.dashboard.db import AppDatabase
+from mira.dashboard.db import AppDatabase, RepoRecord
 from mira.index.relationships import RelationshipStore
 from mira.index.store import IndexStore
 
@@ -62,7 +65,7 @@ def _get_index_dir() -> str:
 _PLATFORM_ORDER = {"github": 0, "gitlab": 1, "forgejo": 2}
 
 
-def _pick_platform_record(records: list) -> object:
+def _pick_platform_record(records: list[RepoRecord]) -> RepoRecord:
     """Return the highest-priority record from a cross-platform list."""
     return min(records, key=lambda r: _PLATFORM_ORDER.get(r.platform, 99))
 
@@ -79,7 +82,7 @@ def _open_store(owner: str, repo: str) -> Generator[IndexStore, None, None]:
         raise HTTPException(status_code=404, detail=f"Repo {owner}/{repo} not found")
     repo_record = _pick_platform_record(repo_records)
 
-    store = IndexStore.open(owner, repo, platform=repo_record.platform)
+    store = cast(IndexStore, IndexStore.open(owner, repo, platform=repo_record.platform))
     try:
         yield store
     finally:
@@ -135,6 +138,8 @@ class RepoDetail(BaseModel):
     imports_count: int
     external_refs_count: int
     lines_count: int = 0
+    status: str = "pending"
+    error: str = ""
     last_indexed: str | None = None
 
 
@@ -517,10 +522,11 @@ async def _run_initial_indexing(default_mode: str) -> None:
             # crashing on an empty auth header.
             logger.warning("Skipping initial index of %s — no %s token", full_name, platform)
             continue
+        store: IndexStore | None = None
         try:
             _app_db.set_repo_status(owner, repo, "indexing", platform=platform)
             tracker.start(full_name)
-            store = IndexStore.open(owner, repo, platform=platform)
+            store = cast(IndexStore, IndexStore.open(owner, repo, platform=platform))
             count = await index_repo(
                 owner=owner,
                 repo=repo,
@@ -533,7 +539,6 @@ async def _run_initial_indexing(default_mode: str) -> None:
             # `count` is files re-indexed this run, not the store total.
             # Read the true total before closing to keep the DB in sync.
             total_files = len(store.all_paths())
-            store.close()
             _app_db.set_repo_status(
                 owner,
                 repo,
@@ -551,9 +556,13 @@ async def _run_initial_indexing(default_mode: str) -> None:
             _app_db.set_repo_status(owner, repo, "empty", error=str(empty), platform=platform)
             tracker.complete(full_name, 0)
         except Exception as exc:
-            _app_db.set_repo_status(owner, repo, "failed", error=str(exc), platform=platform)
-            tracker.fail(full_name, str(exc))
+            error = str(exc) or type(exc).__name__
+            _app_db.set_repo_status(owner, repo, "failed", error=error, platform=platform)
+            tracker.fail(full_name, error)
             logger.exception("Failed to index %s", full_name)
+        finally:
+            if store is not None:
+                store.close()
 
 
 class BlastRadiusModel(BaseModel):
@@ -904,8 +913,9 @@ def get_contributor(login: str, request: Request, period: str = "") -> Contribut
     accepted = rejected = 0
     for repo_record in _app_db.list_repos():
         try:
-            store = IndexStore.open(
-                repo_record.owner, repo_record.repo, platform=repo_record.platform
+            store = cast(
+                IndexStore,
+                IndexStore.open(repo_record.owner, repo_record.repo, platform=repo_record.platform),
             )
             try:
                 rq = store.get_review_quality_by_author(contributor.external_login, since=since)

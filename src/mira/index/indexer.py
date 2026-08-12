@@ -43,6 +43,10 @@ class IndexingCancelled(Exception):
         self.files_indexed = files_indexed
 
 
+class IndexingError(RuntimeError):
+    """Raised when an indexing stage cannot produce a trustworthy index."""
+
+
 _TEMPLATE_DIR = Path(__file__).resolve().parent.parent / "llm" / "prompts" / "templates"
 
 # File extensions we index (source code only)
@@ -397,19 +401,24 @@ async def _summarize_batch(
                 max_tokens=cap,
             )
         except Exception as exc:
-            logger.warning("LLM summarization failed for batch of %d files: %s", len(files), exc)
-            return []
+            raise IndexingError(
+                f"Indexing model failed while summarizing {len(files)} file(s): {exc}"
+            ) from exc
 
     parsed = _parse_summarize_response(raw)
+    if not isinstance(parsed, list) or any(not isinstance(entry, dict) for entry in parsed):
+        raise IndexingError("Indexing model returned an invalid file-summary response")
+    parsed_by_path = {entry.get("path", ""): entry for entry in parsed}
+    missing_paths = [path for path, _content in files if path not in parsed_by_path]
+    if missing_paths:
+        preview = ", ".join(missing_paths[:3])
+        if len(missing_paths) > 3:
+            preview += f", and {len(missing_paths) - 3} more"
+        raise IndexingError(
+            f"Indexing model omitted summaries for {len(missing_paths)} file(s): {preview}"
+        )
 
-    results = []
-    parsed_by_path = {d.get("path", ""): d for d in parsed}
-    for path, content in files:
-        if path in parsed_by_path:
-            results.append((path, content, parsed_by_path[path]))
-        else:
-            logger.debug("No summary returned for %s", path)
-    return results
+    return [(path, content, parsed_by_path[path]) for path, content in files]
 
 
 async def index_repo(
@@ -552,35 +561,47 @@ async def index_repo(
     tasks = [asyncio.create_task(_summarize_batch(batch, llm, llm_sem)) for batch in batches]
 
     indexed_count = len(trivial_pairs)
-    try:
-        for fut in asyncio.as_completed(tasks):
-            if cancel_check and cancel_check():
-                for t in tasks:
-                    if not t.done():
-                        t.cancel()
-                logger.info(
-                    "Indexing cancelled for %s/%s after %d files",
-                    owner,
-                    repo,
-                    indexed_count,
-                )
-                raise IndexingCancelled(indexed_count)
+    pending_tasks = set(tasks)
+    completed_tasks: list[asyncio.Task] = []
+    while pending_tasks or completed_tasks:
+        if cancel_check and cancel_check():
+            for task in pending_tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            logger.info(
+                "Indexing cancelled for %s/%s after %d files",
+                owner,
+                repo,
+                indexed_count,
+            )
+            raise IndexingCancelled(indexed_count)
+
+        if not completed_tasks:
+            done_tasks, pending_tasks = await asyncio.wait(
+                pending_tasks, return_when=asyncio.FIRST_COMPLETED
+            )
+            completed_tasks.extend(done_tasks)
+
+        task = completed_tasks.pop()
+        try:
+            results = task.result()
+        except Exception:
+            for pending_task in pending_tasks:
+                pending_task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            raise
+        for path, content, data in results:
             try:
-                results = await fut
+                summary = _build_file_summary(path, content, data)
             except Exception as exc:
-                # Skip a failed batch and keep going — one bad batch shouldn't
-                # abort the repo (and aborting leaves the other tasks burning tokens).
-                logger.warning("Skipping a summarization batch for %s/%s: %s", owner, repo, exc)
-                continue
-            for path, content, data in results:
-                try:
-                    summary = _build_file_summary(path, content, data)
-                    store.upsert_summary(summary)
-                    indexed_count += 1
-                except Exception as exc:
-                    logger.warning("Skipping file %s in %s/%s: %s", path, owner, repo, exc)
-    except IndexingCancelled:
-        raise
+                for pending_task in pending_tasks:
+                    pending_task.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
+                raise IndexingError(
+                    f"Indexing model returned an invalid summary for {path}: {exc}"
+                ) from exc
+            store.upsert_summary(summary)
+            indexed_count += 1
 
     if cancel_check and cancel_check():
         logger.info(
@@ -821,8 +842,9 @@ async def _summarize_directories(store: IndexStore, llm: Any, semaphore: asyncio
                 )
                 data = json.loads(strip_think_blocks(_strip_code_fences(raw)))
             except Exception as exc:
-                logger.warning("Directory batch summary failed: %s", exc)
-                return
+                raise IndexingError(
+                    f"Indexing model failed while summarizing directories: {exc}"
+                ) from exc
 
         # Map returned summaries back to dir paths. Use "(root)" → "" so the
         # store key matches what other queries use.
@@ -837,18 +859,37 @@ async def _summarize_directories(store: IndexStore, llm: Any, semaphore: asyncio
             if s:
                 by_path[p] = s
 
-        for dir_path, file_count, _summaries in chunk:
-            summary_text = by_path.get(dir_path)
-            if summary_text:
-                store.upsert_directory(
-                    DirectorySummary(
-                        path=dir_path,
-                        summary=summary_text,
-                        file_count=file_count,
-                    )
-                )
+        missing_paths = [
+            dir_path for dir_path, _count, _summaries in chunk if dir_path not in by_path
+        ]
+        if missing_paths:
+            display_paths = [path or "(root)" for path in missing_paths]
+            preview = ", ".join(display_paths[:3])
+            if len(display_paths) > 3:
+                preview += f", and {len(display_paths) - 3} more"
+            raise IndexingError(
+                "Indexing model omitted summaries for "
+                f"{len(missing_paths)} director{'y' if len(missing_paths) == 1 else 'ies'}: {preview}"
+            )
 
-    await asyncio.gather(*(_process_chunk(c) for c in chunks))
+        for dir_path, file_count, _summaries in chunk:
+            store.upsert_directory(
+                DirectorySummary(
+                    path=dir_path,
+                    summary=by_path[dir_path],
+                    file_count=file_count,
+                )
+            )
+
+    tasks = [asyncio.create_task(_process_chunk(chunk)) for chunk in chunks]
+    try:
+        await asyncio.gather(*tasks)
+    except Exception:
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        raise
 
 
 async def _refresh_manifests_incremental(
@@ -956,12 +997,23 @@ async def index_diff(
     if file_pairs:
         batches = _build_batches(file_pairs)
         # Run batches concurrently — the inner semaphore caps real parallelism.
-        all_results = await asyncio.gather(
-            *(_summarize_batch(batch, llm, llm_sem) for batch in batches)
-        )
+        tasks = [asyncio.create_task(_summarize_batch(batch, llm, llm_sem)) for batch in batches]
+        try:
+            all_results = await asyncio.gather(*tasks)
+        except Exception:
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            raise
         for results in all_results:
             for path, content, data in results:
-                summary = _build_file_summary(path, content, data)
+                try:
+                    summary = _build_file_summary(path, content, data)
+                except Exception as exc:
+                    raise IndexingError(
+                        f"Indexing model returned an invalid summary for {path}: {exc}"
+                    ) from exc
                 store.upsert_summary(summary)
                 indexed_count += 1
 
@@ -1036,14 +1088,17 @@ async def _summarize_directories_selective(
                     temperature=0.0,
                 )
                 data = json.loads(strip_think_blocks(_strip_code_fences(raw)))
-                summary_text = data.get("summary", "")
-                if summary_text:
-                    store.upsert_directory(
-                        DirectorySummary(
-                            path=dir_path,
-                            summary=summary_text,
-                            file_count=len(file_paths),
-                        )
+                summary_text = str(data.get("summary", "")).strip()
+                if not summary_text:
+                    raise ValueError("response omitted the directory summary")
+                store.upsert_directory(
+                    DirectorySummary(
+                        path=dir_path,
+                        summary=summary_text,
+                        file_count=len(file_paths),
                     )
+                )
             except Exception as exc:
-                logger.warning("Directory summary failed for %s: %s", display_path, exc)
+                raise IndexingError(
+                    f"Indexing model failed while summarizing directory {display_path}: {exc}"
+                ) from exc
