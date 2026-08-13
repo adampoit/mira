@@ -61,6 +61,44 @@ def test_trace_store_records_and_summarizes_session(tmp_path: Path, pr_info: PRI
     assert "events" not in summary
 
 
+def test_failed_trace_persists_structured_failure_and_sanitizes_secrets(
+    tmp_path: Path, pr_info: PRInfo
+) -> None:
+    store = TraceStore(tmp_path)
+    trace = store.start(pr_info)
+    failure = {
+        "category": "provider",
+        "message": "403 Access denied in this region; token=secret-value",
+        "provider": "opencode-go",
+        "model": "deepseek/deepseek-v4-pro",
+        "status": 403,
+        "retryable": False,
+    }
+    trace.emit(
+        "error",
+        "Pi review agent failed",
+        failure["message"],
+        {"source": "pi", "pass": "review", "agent_id": 1, **failure},
+    )
+    assert store.finish(trace.session_id, "failed", failure=failure)
+
+    session = store.get(trace.session_id)
+    assert session["error"] == "HTTP 403: 403 Access denied in this region; token=[redacted]"
+    assert session["failure"] == {
+        "category": "provider",
+        "message": "HTTP 403: 403 Access denied in this region; token=[redacted]",
+        "provider": "opencode-go",
+        "model": "deepseek/deepseek-v4-pro",
+        "status": 403,
+        "retryable": False,
+    }
+    assert "secret-value" not in json.dumps(session)
+
+    events = cast(list[dict[str, object]], session["events"])
+    assert events[-1]["detail"] == session["failure"]["message"]  # type: ignore[index]
+    assert store.list_sessions()[0]["failed_agents"] == 1
+
+
 def test_trace_metrics_summarize_pi_activity(tmp_path: Path, pr_info: PRInfo) -> None:
     store = TraceStore(tmp_path)
     trace = store.start(pr_info)

@@ -26,7 +26,11 @@ import { ConfirmDialog } from "@/components/ui/confirm-dialog"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { API_BASE, fetchJson, postJson } from "@/lib/api/http"
-import type { ReviewTraceMetrics } from "@/lib/api/types"
+import type {
+  ReviewFailure,
+  ReviewProviderCheck,
+  ReviewTraceMetrics,
+} from "@/lib/api/types"
 import { useDocumentTitle } from "@/lib/hooks"
 import { cn } from "@/lib/utils"
 
@@ -57,13 +61,16 @@ type ReviewSession = {
   trace_metrics: TraceMetrics
   recovery_reason?: string
   error?: string
+  failure?: ReviewFailure | null
+  provider_check?: ReviewProviderCheck | null
 }
+type AgentState = "working" | "complete" | "failed"
 type AgentGroup = {
   key: string
   pass: string
   agentId: number
   events: TraceEvent[]
-  complete: boolean
+  state: AgentState
   startedAt: number
   finishedAt: number | null
   findings: number
@@ -205,12 +212,30 @@ function formatCharacters(value: number) {
   return `${formatCompactNumber(value)} chars`
 }
 
+function failureReason(
+  failure: ReviewFailure | null | undefined,
+  fallback = "The review could not complete."
+) {
+  return failure?.message || fallback
+}
+
+function failureDetails(failure: ReviewFailure | null | undefined) {
+  if (!failure) return []
+  return [
+    failure.provider && `Provider: ${failure.provider}`,
+    failure.model && `Model: ${failure.model}`,
+    failure.status && `HTTP status: ${failure.status}`,
+    `Retry likely: ${failure.retryable ? "yes" : "no"}`,
+  ].filter((value): value is string => Boolean(value))
+}
+
 function traceMetricsFromEvents(events: TraceEvent[]): TraceMetrics {
   const metrics: TraceMetrics = {
     pi_events: 0,
     llm_calls: 0,
     tool_calls: 0,
     tool_errors: 0,
+    failed_calls: 0,
     reasoning_chars: 0,
     output_chars: 0,
     input_tokens: 0,
@@ -232,6 +257,7 @@ function traceMetricsFromEvents(events: TraceEvent[]): TraceMetrics {
     if (event.kind === "tool_result" && event.data.is_error === true) {
       metrics.tool_errors += 1
     }
+    if (event.kind === "error") metrics.failed_calls += 1
     if (event.kind === "reasoning")
       metrics.reasoning_chars += event.detail.length
     if (event.kind === "output") metrics.output_chars += event.detail.length
@@ -335,7 +361,7 @@ const eventDataFields: Record<string, Set<string>> = {
   tool_result: new Set(["is_error"]),
   result: new Set(["model", "result_tool", "usage", "duration_ms"]),
   agent_end: new Set(["model", "usage", "duration_ms"]),
-  error: new Set(["model", "result_tool"]),
+  error: new Set(["model", "result_tool", "failure"]),
 }
 
 function formatEventValue(value: unknown) {
@@ -496,21 +522,30 @@ function PhaseOverview({
     /quality|confidence|critique|final review/i.test(event.title)
   )
   const agentsComplete =
-    agents.length > 0 && agents.every((agent) => agent.complete)
+    agents.length > 0 && agents.every((agent) => agent.state === "complete")
+  const agentsFailed = agents.some((agent) => agent.state === "failed")
   const phases = [
     { label: "Context", state: "complete" },
     {
       label: "Parallel analysis",
-      state: agentsComplete ? "complete" : agents.length ? "active" : "pending",
+      state: agentsFailed
+        ? "error"
+        : agentsComplete
+          ? "complete"
+          : agents.length
+            ? "active"
+            : "pending",
     },
     {
       label: "Quality check",
       state:
-        session.status === "completed" || session.status === "failed"
+        session.status === "completed"
           ? "complete"
-          : qualityStarted
-            ? "active"
-            : "pending",
+          : session.status === "failed"
+            ? "error"
+            : qualityStarted
+              ? "active"
+              : "pending",
     },
     {
       label: "Published",
@@ -616,7 +651,9 @@ function PiTelemetry({ metrics }: { metrics: TraceMetrics }) {
           <dd className="mt-1 text-lg font-semibold tabular-nums">
             {metrics.total_tokens
               ? formatCompactNumber(metrics.total_tokens)
-              : "—"}
+              : metrics.failed_calls
+                ? `${metrics.failed_calls} failed`
+                : "—"}
           </dd>
         </div>
       </dl>
@@ -630,6 +667,11 @@ function PiTelemetry({ metrics }: { metrics: TraceMetrics }) {
         )}
         {metrics.cache_read_tokens > 0 && (
           <span>Cache read: {metrics.cache_read_tokens.toLocaleString()}</span>
+        )}
+        {metrics.failed_calls > 0 && (
+          <span className="font-medium text-destructive">
+            Failed calls: {metrics.failed_calls}
+          </span>
         )}
         {metrics.duration_ms > 0 && (
           <span>Agent time: {formatMilliseconds(metrics.duration_ms)}</span>
@@ -694,10 +736,15 @@ function AgentWorkspace({
                 <span className="text-sm font-medium">
                   {agentName(agent.pass)}
                 </span>
-                {agent.complete ? (
+                {agent.state === "complete" ? (
                   <Check
                     className="size-4 text-emerald-600"
                     aria-label="Complete"
+                  />
+                ) : agent.state === "failed" ? (
+                  <AlertCircle
+                    className="size-4 text-destructive"
+                    aria-label="Failed"
                   />
                 ) : (
                   <LoaderCircle
@@ -707,8 +754,12 @@ function AgentWorkspace({
                 )}
               </span>
               <span className="mt-1 block text-xs text-muted-foreground">
-                {agent.complete ? "Complete" : "Working"} ·{" "}
-                {formatDuration(agent.startedAt, end)}
+                {agent.state === "complete"
+                  ? "Complete"
+                  : agent.state === "failed"
+                    ? "Failed"
+                    : "Working"}{" "}
+                · {formatDuration(agent.startedAt, end)}
               </span>
             </button>
           )
@@ -723,19 +774,23 @@ function AgentWorkspace({
                 {agentName(selected.pass)}
               </h3>
               <Badge variant="secondary" className="gap-1.5">
-                {selected.complete ? (
+                {selected.state === "complete" ? (
                   <Check className="size-3" aria-hidden />
+                ) : selected.state === "failed" ? (
+                  <AlertCircle className="size-3" aria-hidden />
                 ) : (
                   <LoaderCircle
                     className="size-3 animate-spin motion-reduce:animate-none"
                     aria-hidden
                   />
                 )}
-                {selected.complete
+                {selected.state === "complete"
                   ? "Complete"
-                  : running
-                    ? "Working"
-                    : "Stopped"}
+                  : selected.state === "failed"
+                    ? "Failed"
+                    : running
+                      ? "Working"
+                      : "Stopped"}
               </Badge>
             </div>
             <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
@@ -765,11 +820,13 @@ function AgentWorkspace({
         <div className="mt-6 rounded-lg bg-muted/35 px-4 py-3 text-sm">
           <span className="font-medium">Outcome: </span>
           <span className="text-muted-foreground">
-            {selected.complete
+            {selected.state === "complete"
               ? selected.findings
                 ? `${selected.findings} candidate finding${selected.findings === 1 ? "" : "s"} returned to the review pipeline.`
                 : "Completed without candidate findings."
-              : "Analysis is still in progress."}
+              : selected.state === "failed"
+                ? "This agent failed before it could return a candidate result."
+                : "Analysis is still in progress."}
           </span>
         </div>
         <h4 className="mt-7 mb-4 text-sm font-semibold">Activity</h4>
@@ -780,7 +837,9 @@ function AgentWorkspace({
               event={event}
               isLast={index === events.length - 1}
               streaming={
-                running && !selected.complete && index === events.length - 1
+                running &&
+                selected.state === "working" &&
+                index === events.length - 1
               }
             />
           ))}
@@ -855,6 +914,11 @@ export function ReviewSessionPage() {
             current && {
               ...current,
               status: message.status,
+              error:
+                typeof message.error === "string"
+                  ? message.error
+                  : current.error,
+              failure: message.failure || current.failure,
               finished_at:
                 message.status === "completed" ||
                 message.status === "failed" ||
@@ -884,18 +948,18 @@ export function ReviewSessionPage() {
         pass,
         agentId,
         events: [],
-        complete: false,
+        state: "working",
         startedAt: event.created_at,
         finishedAt: null,
         findings: 0,
       }
       existing.events.push(event)
       existing.startedAt = Math.min(existing.startedAt, event.created_at)
-      if (
-        (event.kind === "decision" && /complete$/i.test(event.title)) ||
-        event.kind === "error"
-      ) {
-        existing.complete = true
+      if (event.kind === "decision" && /complete$/i.test(event.title)) {
+        existing.state = "complete"
+        existing.finishedAt = event.created_at
+      } else if (event.kind === "error") {
+        existing.state = "failed"
         existing.finishedAt = event.created_at
       }
       if (Array.isArray(event.data.findings)) {
@@ -946,10 +1010,17 @@ export function ReviewSessionPage() {
       ),
     [session]
   )
-  const traceMetrics = useMemo(
-    () => traceMetricsFromEvents(session?.events || []),
-    [session]
-  )
+  const traceMetrics = useMemo(() => {
+    const persisted = session?.trace_metrics
+    const computed = traceMetricsFromEvents(session?.events || [])
+    return persisted
+      ? {
+          ...computed,
+          ...persisted,
+          failed_calls: persisted.failed_calls ?? computed.failed_calls,
+        }
+      : computed
+  }, [session])
   const milestones = useMemo(
     () =>
       (session?.events || []).filter((event) => {
@@ -1033,6 +1104,14 @@ export function ReviewSessionPage() {
   const running = session.status === "running"
   const active = running || session.status === "queued"
   const interrupted = session.status === "interrupted"
+  const failed = session.status === "failed"
+  const failure =
+    session.failure ||
+    session.provider_check?.failure ||
+    (session.error
+      ? { category: "worker", message: session.error, retryable: true }
+      : null)
+  const failureMeta = failureDetails(failure)
   return (
     <main className="mx-auto w-full max-w-6xl px-4 py-6 sm:px-6 lg:py-9">
       <header className="pb-6">
@@ -1115,6 +1194,44 @@ export function ReviewSessionPage() {
           </p>
         )}
       </header>
+
+      {failed && (
+        <section
+          className="mb-6 flex flex-col gap-4 rounded-lg border border-destructive/25 bg-destructive/10 p-4 text-sm sm:flex-row sm:items-start sm:justify-between"
+          aria-labelledby="failure-title"
+        >
+          <div className="min-w-0">
+            <h2 id="failure-title" className="font-medium text-destructive">
+              Review failed
+            </h2>
+            <p className="mt-1 max-w-3xl whitespace-pre-wrap text-destructive/90">
+              {failureReason(failure, session.error)}
+            </p>
+            {failureMeta.length > 0 && (
+              <dl className="mt-3 flex flex-wrap gap-x-5 gap-y-1 text-xs text-destructive/80">
+                {failureMeta.map((value) => (
+                  <div key={value}>{value}</div>
+                ))}
+              </dl>
+            )}
+            {session.provider_check?.error &&
+              session.provider_check.error !== failure?.message && (
+                <p className="mt-2 text-xs text-destructive/80">
+                  Provider check: {session.provider_check.error}
+                </p>
+              )}
+            {session.finished_at && (
+              <p className="mt-2 text-xs text-destructive/70">
+                Failed {new Date(session.finished_at * 1000).toLocaleString()}
+              </p>
+            )}
+          </div>
+          <Button variant="outline" onClick={() => setConfirmRetrigger(true)}>
+            <RefreshCw className="size-4" />
+            Retry review
+          </Button>
+        </section>
+      )}
 
       {interrupted && (
         <section
@@ -1279,7 +1396,7 @@ export function ReviewSessionPage() {
             <div>
               <dt className="text-xs text-muted-foreground">Agents</dt>
               <dd className="mt-1 font-medium tabular-nums">
-                {agents.filter((agent) => agent.complete).length} of{" "}
+                {agents.filter((agent) => agent.state === "complete").length} of{" "}
                 {agents.length} complete
               </dd>
             </div>

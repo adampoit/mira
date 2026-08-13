@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import threading
 import time
 import uuid
@@ -19,6 +20,134 @@ from mira.models import PRInfo
 TraceData = dict[str, object]
 TraceEvent = dict[str, object]
 ReviewSession = dict[str, object]
+
+_FAILURE_CATEGORIES = frozenset({"provider", "worker", "protocol"})
+_MAX_FAILURE_MESSAGE_CHARS = 2_000
+
+
+def _safe_failure_message(value: object) -> str:
+    if isinstance(value, Mapping):
+        for key in ("message", "detail", "reason", "error"):
+            nested = value.get(key)
+            if nested is not None and nested is not value:
+                message = _safe_failure_message(nested)
+                if message:
+                    return message
+        return ""
+    if isinstance(value, list):
+        for nested in value:
+            message = _safe_failure_message(nested)
+            if message:
+                return message
+        return ""
+    if value is None:
+        return ""
+    text = str(value).replace("\x00", "").strip()
+    if text.startswith(("{", "[")):
+        try:
+            decoded = json.loads(text)
+        except (json.JSONDecodeError, TypeError):
+            pass
+        else:
+            message = _safe_failure_message(decoded)
+            if message:
+                text = message
+            elif isinstance(decoded, (dict, list)):
+                text = "Provider returned an error response"
+    text = re.sub(r"(?i)\bbearer\s+[^\s,;]+", "Bearer [redacted]", text)
+    text = re.sub(
+        r"""(?i)(\b(?:api[_-]?key|token|secret|password)\b\s*[:=]\s*)["']?[^\s,;"']+""",
+        r"\1[redacted]",
+        text,
+    )
+    text = re.sub(
+        r"(?i)([?&](?:api[_-]?key|token|secret|password)=)[^&\s]+",
+        r"\1[redacted]",
+        text,
+    )
+    text = re.sub(
+        r"""(?is)\b(?:prompt|messages?|input|context|content)\s*[:=]\s*["']?[^\n,;"']+""",
+        "[redacted sensitive content]",
+        text,
+    )
+    text = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", "", text)
+    if len(text) <= _MAX_FAILURE_MESSAGE_CHARS:
+        return text
+    return f"{text[:_MAX_FAILURE_MESSAGE_CHARS].rstrip()}… [truncated]"
+
+
+def _safe_identifier(value: object) -> str:
+    if not isinstance(value, str):
+        return ""
+    text = value.strip()
+    return text if re.fullmatch(r"[A-Za-z0-9._:/-]{1,200}", text) else ""
+
+
+def _failure_status(value: object) -> int | None:
+    if isinstance(value, int) and not isinstance(value, bool) and 100 <= value <= 599:
+        return value
+    if isinstance(value, str):
+        match = re.search(r"\b([1-5]\d{2})\b", value)
+        if match:
+            return int(match.group(1))
+    return None
+
+
+def sanitize_failure(
+    value: object,
+    *,
+    fallback_message: object = None,
+) -> TraceData | None:
+    """Keep only safe, structured failure detail for persistence and API output."""
+    candidate = value
+    as_dict = getattr(candidate, "as_dict", None)
+    if callable(as_dict):
+        try:
+            candidate = as_dict()
+        except Exception:
+            candidate = None
+    if not isinstance(candidate, Mapping):
+        message = _safe_failure_message(fallback_message)
+        if not message:
+            return None
+        return {"category": "worker", "message": message, "retryable": True}
+
+    raw_category = candidate.get("category")
+    category = (
+        raw_category
+        if isinstance(raw_category, str) and raw_category in _FAILURE_CATEGORIES
+        else "worker"
+    )
+    message = _safe_failure_message(candidate.get("message", fallback_message))
+    if not message:
+        message = _safe_failure_message(fallback_message)
+    if not message:
+        return None
+    status = _failure_status(
+        candidate.get("status", candidate.get("http_status", candidate.get("httpStatus")))
+    )
+    if status is not None and not re.match(rf"(?i)^HTTP\s+{status}\b", message):
+        message = f"HTTP {status}: {message}"
+    result: TraceData = {
+        "category": category,
+        "message": message,
+        "retryable": candidate.get("retryable") is not False,
+    }
+    provider = _safe_identifier(candidate.get("provider"))
+    model = _safe_identifier(candidate.get("model"))
+    if provider:
+        result["provider"] = provider
+    if model:
+        result["model"] = model
+    if status is not None:
+        result["status"] = status
+    return result
+
+
+def failure_for_exception(exc: BaseException) -> TraceData | None:
+    """Extract a safe failure from an exception, including legacy errors."""
+    return sanitize_failure(getattr(exc, "failure", None), fallback_message=str(exc))
+
 
 ACTIVE_STATUSES = frozenset({"queued", "running"})
 TERMINAL_STATUSES = frozenset({"completed", "failed", "interrupted"})
@@ -122,11 +251,17 @@ class ReviewTrace:
             owner_id=self.instance_id,
         )
 
-    def finish_provider_check(self, status: str, error: str = "") -> bool:
+    def finish_provider_check(
+        self,
+        status: str,
+        error: str = "",
+        failure: Mapping[str, object] | None = None,
+    ) -> bool:
         return self.store.update_provider_check(
             self.session_id,
             status=status,
             error=error,
+            failure=failure,
             owner_id=self.instance_id,
         )
 
@@ -293,6 +428,29 @@ class TraceStore:
         *,
         owner_id: str,
     ) -> bool:
+        if kind == "error":
+            safe_failure = sanitize_failure(data.get("failure", data), fallback_message=detail)
+            safe_data = {
+                key: value
+                for key, value in data.items()
+                if key
+                in {
+                    "source",
+                    "event_type",
+                    "pass",
+                    "agent_id",
+                    "run_id",
+                    "model",
+                    "thinking_level",
+                    "result_tool",
+                }
+            }
+            if safe_failure is not None:
+                safe_data["failure"] = safe_failure
+                detail = str(safe_failure["message"])
+            else:
+                detail = _safe_failure_message(detail)
+            data = safe_data
         with self._lock:
             session = self._read(session_id)
             if not self._is_owned_active(session, owner_id):
@@ -350,6 +508,7 @@ class TraceStore:
         *,
         status: str,
         error: str = "",
+        failure: Mapping[str, object] | None = None,
         owner_id: str | None = None,
     ) -> bool:
         with self._lock:
@@ -363,8 +522,12 @@ class TraceStore:
             updated = dict(typed_check)
             updated["status"] = status
             updated["updated_at"] = time.time()
-            if error:
-                updated["error"] = error
+            safe_error = _safe_failure_message(error)
+            if safe_error:
+                updated["error"] = safe_error
+            safe_failure = sanitize_failure(failure, fallback_message=safe_error)
+            if safe_failure is not None:
+                updated["failure"] = safe_failure
             session["provider_check"] = updated
             self._write(session)
         return True
@@ -373,8 +536,9 @@ class TraceStore:
         with self._lock:
             session = self._read(session_id)
             session["recovery_status"] = status
-            if detail:
-                session["recovery_detail"] = detail
+            safe_detail = _safe_failure_message(detail)
+            if safe_detail:
+                session["recovery_detail"] = safe_detail
             self._write(session)
         return True
 
@@ -384,6 +548,7 @@ class TraceStore:
         status: str,
         detail: str = "",
         *,
+        failure: Mapping[str, object] | None = None,
         owner_id: str | None = None,
     ) -> bool:
         if status not in TERMINAL_STATUSES:
@@ -399,10 +564,22 @@ class TraceStore:
             session["status"] = status
             session["finished_at"] = now
             session["heartbeat_at"] = now
-            if detail:
-                session["error"] = detail
+            safe_failure = sanitize_failure(failure, fallback_message=detail)
+            safe_detail = (
+                str(safe_failure["message"])
+                if safe_failure is not None and isinstance(safe_failure.get("message"), str)
+                else _safe_failure_message(detail)
+            )
+            if safe_detail:
+                session["error"] = safe_detail
+            if safe_failure is not None:
+                session["failure"] = safe_failure
             self._write(session)
-        bus.emit("review_trace_status", {"session_id": session_id, "status": status})
+        status_message: dict[str, object] = {"session_id": session_id, "status": status}
+        if safe_failure is not None:
+            status_message["failure"] = safe_failure
+            status_message["error"] = safe_detail
+        bus.emit("review_trace_status", status_message)
         return True
 
     def link_replacement(self, session_id: str, replacement_id: str) -> None:
@@ -421,6 +598,7 @@ class TraceStore:
             "llm_calls": 0,
             "tool_calls": 0,
             "tool_errors": 0,
+            "failed_calls": 0,
             "reasoning_chars": 0,
             "output_chars": 0,
             "input_tokens": 0,
@@ -447,6 +625,8 @@ class TraceStore:
                 metrics["tool_calls"] = cast(int, metrics["tool_calls"]) + 1
             elif kind == "tool_result" and data.get("is_error") is True:
                 metrics["tool_errors"] = cast(int, metrics["tool_errors"]) + 1
+            elif kind == "error":
+                metrics["failed_calls"] = cast(int, metrics["failed_calls"]) + 1
             if kind == "reasoning" and isinstance(detail, str):
                 metrics["reasoning_chars"] = cast(int, metrics["reasoning_chars"]) + len(detail)
             elif kind == "output" and isinstance(detail, str):
@@ -509,32 +689,37 @@ class TraceStore:
             findings = 0
             agents: set[tuple[str, int]] = set()
             completed_agents: set[tuple[str, int]] = set()
+            failed_agents: set[tuple[str, int]] = set()
             for event in events:
                 data = self._event_data(event)
                 event_findings = data.get("findings")
                 if isinstance(event_findings, list):
                     findings = len(cast(list[object], event_findings))
-                if data.get("source") == "pi":
-                    continue
                 pass_name = data.get("pass")
                 agent_id = data.get("agent_id")
-                if isinstance(pass_name, str) and isinstance(agent_id, int):
-                    key = (pass_name, agent_id)
-                    agents.add(key)
-                    title = event.get("title")
-                    if (
-                        event.get("kind") == "decision"
-                        and isinstance(title, str)
-                        and title.endswith("complete")
-                    ):
-                        completed_agents.add(key)
+                if not isinstance(pass_name, str) or not isinstance(agent_id, int):
+                    continue
+                key = (pass_name, agent_id)
+                agents.add(key)
+                if event.get("kind") == "error":
+                    failed_agents.add(key)
+                if data.get("source") == "pi":
+                    continue
+                title = event.get("title")
+                if (
+                    event.get("kind") == "decision"
+                    and isinstance(title, str)
+                    and title.endswith("complete")
+                ):
+                    completed_agents.add(key)
             current_data = self._event_data(current) if current else {}
             session.update(
                 current_pass=current_data.get("pass"),
                 current_agent=current_data.get("agent_id"),
                 findings=findings,
                 agent_count=len(agents),
-                completed_agents=len(completed_agents),
+                completed_agents=len(completed_agents - failed_agents),
+                failed_agents=len(failed_agents),
                 event_count=len(events),
                 lease_live=self.is_live(session),
             )
@@ -604,8 +789,9 @@ class TraceStore:
                     session["finished_at"] = now
                     session["heartbeat_at"] = now
                     session["last_event_at"] = now
-                    session["error"] = detail
-                    session["recovery_reason"] = detail
+                    safe_detail = _safe_failure_message(detail)
+                    session["error"] = safe_detail
+                    session["recovery_reason"] = safe_detail
                     recovered.append(dict(session))
                 self._write(session)
         return recovered
@@ -678,6 +864,31 @@ class TraceStore:
         _ = normalized.setdefault("retry_of", None)
         _ = normalized.setdefault("replacement_id", None)
         _ = normalized.setdefault("provider_check", None)
+        _ = normalized.setdefault("failure", None)
+        raw_failure = normalized.get("failure")
+        normalized_failure = sanitize_failure(
+            raw_failure,
+            fallback_message=normalized.get("error") if raw_failure is not None else None,
+        )
+        normalized["failure"] = normalized_failure
+        safe_error = _safe_failure_message(normalized.get("error"))
+        if safe_error:
+            normalized["error"] = safe_error
+        if normalized_failure is not None:
+            normalized["error"] = normalized_failure["message"]
+        provider_check = normalized.get("provider_check")
+        if isinstance(provider_check, dict):
+            normalized_check = dict(provider_check)
+            check_error = _safe_failure_message(normalized_check.get("error"))
+            if check_error:
+                normalized_check["error"] = check_error
+            normalized_check_failure = sanitize_failure(
+                normalized_check.get("failure"), fallback_message=check_error
+            )
+            normalized_check["failure"] = normalized_check_failure
+            if normalized_check_failure is not None:
+                normalized_check["error"] = normalized_check_failure["message"]
+            normalized["provider_check"] = normalized_check
         _ = normalized.setdefault("trace_metrics", {})
         _ = normalized.setdefault("recovery_status", None)
         _ = normalized.setdefault("recovery_detail", None)
@@ -765,10 +976,24 @@ async def review_lifecycle(
         review_tracker.interrupt(repo_full, number, detail)
         raise
     except Exception as exc:
-        detail = str(exc) or type(exc).__name__
+        failure = failure_for_exception(exc)
+        detail = (
+            str(failure["message"])
+            if failure is not None and isinstance(failure.get("message"), str)
+            else str(exc) or type(exc).__name__
+        )
         with suppress(Exception):
-            trace.emit("error", "Review stopped", detail)
-            _ = store.finish(trace.session_id, "failed", detail, owner_id=trace.instance_id)
+            event_data: dict[str, object] = {}
+            if failure is not None:
+                event_data["failure"] = failure
+            trace.emit("error", "Review stopped", detail, event_data)
+            _ = store.finish(
+                trace.session_id,
+                "failed",
+                detail,
+                failure=failure,
+                owner_id=trace.instance_id,
+            )
         review_tracker.fail(repo_full, number, detail)
         raise
     else:

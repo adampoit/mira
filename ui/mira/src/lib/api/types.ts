@@ -414,3 +414,36 @@ export interface OpenPr {
   waiting_on: string[]
   reviewers: OpenPrReviewer[]
 }
+
+// Review failure fields are declaration-merged so older composed API types stay
+// source-compatible while traces gain structured provider diagnostics.
+export type ReviewFailureCategory = "provider" | "worker" | "protocol"
+
+export interface ReviewFailure {
+  category: ReviewFailureCategory
+  message: string
+  provider?: string
+  model?: string
+  status?: number
+  retryable: boolean
+}
+
+export interface ReviewProviderCheck {
+  platform: string
+  check_id: number | string
+  status: string
+  started_at?: number
+  updated_at?: number
+  error?: string
+  failure?: ReviewFailure
+}
+
+export interface ReviewTraceMetrics {
+  failed_calls: number
+}
+
+export interface ReviewTraceSummary {
+  failed_agents?: number
+  failure?: ReviewFailure | null
+  provider_check?: ReviewProviderCheck | null
+}
