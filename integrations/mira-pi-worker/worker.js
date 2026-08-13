@@ -3,11 +3,10 @@
 import process from "node:process";
 import { Type } from "typebox";
 import {
-  AuthStorage,
   createAgentSession,
   DefaultResourceLoader,
   defineTool,
-  ModelRegistry,
+  ModelRuntime,
   SessionManager,
   SettingsManager,
 } from "@earendil-works/pi-coding-agent";
@@ -168,12 +167,18 @@ async function main() {
     });
   });
 
-  const authStorage = AuthStorage.create(`${config.agent_dir}/auth.json`);
+  const modelRuntime = await ModelRuntime.create({
+    authPath: `${config.agent_dir}/auth.json`,
+    modelsPath: null,
+    refreshOnCreate: false,
+  });
   if (process.env.OPENCODE_API_KEY)
-    authStorage.setRuntimeApiKey("opencode-go", process.env.OPENCODE_API_KEY);
-  const modelRegistry = ModelRegistry.inMemory(authStorage);
+    await modelRuntime.setRuntimeApiKey(
+      "opencode-go",
+      process.env.OPENCODE_API_KEY,
+    );
   const modelId = config.model.split("/").at(-1);
-  const model = modelRegistry.find("opencode-go", modelId);
+  const model = modelRuntime.getModel("opencode-go", modelId);
   if (!model) throw new Error(`Pi model not found: opencode-go/${modelId}`);
 
   const settingsManager = SettingsManager.inMemory({
@@ -202,8 +207,7 @@ async function main() {
     tools: tools.map((tool) => tool.name),
     customTools: tools,
     noTools: "builtin",
-    authStorage,
-    modelRegistry,
+    modelRuntime,
     resourceLoader,
     sessionManager: SessionManager.create(config.cwd, config.session_dir),
     settingsManager,
