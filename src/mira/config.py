@@ -203,11 +203,12 @@ class ReviewConfig(BaseModel):
     # findings).
     security_pass: bool = True
 
-    # When the repo is not indexed, give the reviewer LLM tools (`read_file`,
-    # `grep_repo`) it can call to fetch cross-file context on demand. Closes
-    # the gap on Java/Go cross-file findings that JIT pre-fetch can't reach
-    # (those languages need build-system parsing to resolve imports).
-    # No effect when the repo is indexed.
+    # Give the reviewer LLM tools (`read_file`, `grep_repo`) to fetch
+    # cross-file context on demand. On unindexed repos this closes the
+    # Java/Go gaps JIT pre-fetch can't reach; on indexed repos it lets the
+    # reviewer trace callers and dispatch points beyond the pre-fetched
+    # index context. Disable to force single-shot reviews (cheaper, less
+    # thorough).
     agentic_tools: bool = True
 
     # Whether the JIT cross-file resolver should attempt Java + Go imports.
