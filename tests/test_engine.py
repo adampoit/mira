@@ -2079,9 +2079,7 @@ class TestAgenticToolsOnIndexedRepos:
         return mock_provider
 
     @pytest.mark.asyncio
-    async def test_fetcher_set_on_indexed_repo_with_agentic_tools(
-        self, monkeypatch, tmp_path
-    ):
+    async def test_fetcher_set_on_indexed_repo_with_agentic_tools(self, monkeypatch, tmp_path):
         """When agentic_tools=True and index has data, _agentic_source_fetcher
         is set so the reviewer can use read_file/grep_repo."""
         from unittest.mock import MagicMock
@@ -2109,17 +2107,13 @@ class TestAgenticToolsOnIndexedRepos:
         mock_llm.count_tokens = MagicMock(return_value=100)
         mock_llm.usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
 
-        engine = ReviewEngine(
-            config=config, llm=mock_llm, provider=self._make_provider()
-        )
+        engine = ReviewEngine(config=config, llm=mock_llm, provider=self._make_provider())
         await engine.review_pr("https://github.com/test/repo/pull/1")
 
         assert engine._agentic_source_fetcher is not None
 
     @pytest.mark.asyncio
-    async def test_fetcher_not_set_when_agentic_tools_disabled(
-        self, monkeypatch, tmp_path
-    ):
+    async def test_fetcher_not_set_when_agentic_tools_disabled(self, monkeypatch, tmp_path):
         """When agentic_tools=False, _agentic_source_fetcher stays None even
         on indexed repos."""
         from unittest.mock import MagicMock
@@ -2147,9 +2141,7 @@ class TestAgenticToolsOnIndexedRepos:
         mock_llm.count_tokens = MagicMock(return_value=100)
         mock_llm.usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
 
-        engine = ReviewEngine(
-            config=config, llm=mock_llm, provider=self._make_provider()
-        )
+        engine = ReviewEngine(config=config, llm=mock_llm, provider=self._make_provider())
         await engine.review_pr("https://github.com/test/repo/pull/1")
 
         assert engine._agentic_source_fetcher is None
