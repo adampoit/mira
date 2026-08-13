@@ -432,6 +432,7 @@ export function ReviewsPage() {
                                   ? "text-destructive"
                                   : "text-amber-800 dark:text-amber-300"
                               )}
+                              title={session.error}
                             >
                               {session.error}
                             </p>
