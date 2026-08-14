@@ -72,6 +72,22 @@ jobs:
       - name: Build
         run: npm run build
 
+  nix:
+    # Build the Pi worker through Nix so dependency metadata and the package
+    # definition stay compatible with downstream NixOS deployments.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v22
+
+      - name: Enable Nix cache
+        uses: DeterminateSystems/magic-nix-cache-action@v14
+
+      - name: Check flake and build packages
+        run: nix flake check --print-build-logs
+
   docker:
     # Build the unified UI+backend image and smoke-test it boots. Catches
     # packaging issues (missing extras, broken Dockerfile, bad UI assets)
