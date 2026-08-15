@@ -8,6 +8,7 @@ import contextlib
 import logging
 import re
 from collections.abc import Awaitable, Callable
+from inspect import isawaitable
 from typing import cast
 
 from mira.analysis.severity import classify_severity
@@ -532,7 +533,9 @@ class ReviewEngine:
             repository_providers.append(self.indexing_llm)
         for llm in repository_providers:
             if isinstance(llm, RepositoryAwareProvider):
-                await llm.bind_repository(self.provider, pr_info)
+                bind_result = llm.bind_repository(self.provider, pr_info)
+                if isawaitable(bind_result):
+                    await bind_result
 
         async def _resolve_threads() -> tuple[
             int, int, list[UnresolvedThread], list[ThreadDecision]
